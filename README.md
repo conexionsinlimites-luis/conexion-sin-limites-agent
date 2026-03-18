@@ -108,10 +108,17 @@ Si algo no te gusta, le dices a Claude Code y lo ajusta al momento.
 
 ### Paso 6: Deploy a produccion (opcional, 10 minutos)
 
-Cuando estes satisfecho con tu agente, Claude Code te guia para subirlo a **Railway**
-(un servicio de hosting) y conectarlo a WhatsApp real.
+Cuando estes satisfecho con tu agente, Claude Code te guia para ponerlo en linea:
+
+1. **Claude Code prepara tu proyecto** para produccion (ajusta configuracion)
+2. **Tu lo subes a GitHub** — Claude Code te da los comandos exactos para crear tu repo
+3. **Conectas Railway** — entras a [railway.app](https://railway.app), le das tu repo de GitHub y Railway lo deployea automaticamente
+4. **Configuras las variables** — Claude Code te dice exactamente cuales poner en Railway (las mismas API keys de tu .env)
+5. **Configuras el webhook** — Claude Code te guia para conectar tu proveedor de WhatsApp con la URL de Railway
 
 Despues de esto, cualquier persona que te escriba por WhatsApp sera atendida por tu agente.
+
+**Nota:** No necesitas saber de servidores ni de deploy. Claude Code te dice cada paso, que escribir y donde hacer click.
 
 ---
 

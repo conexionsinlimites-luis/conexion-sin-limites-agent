@@ -54,12 +54,16 @@ async def health_check():
 
 
 @app.get("/webhook")
+@app.head("/webhook")
 async def webhook_verificacion(request: Request):
-    """Verificación GET del webhook (requerido por Meta Cloud API, no-op para otros)."""
-    resultado = await proveedor.validar_webhook(request)
-    if resultado is not None:
-        return PlainTextResponse(str(resultado))
-    return {"status": "ok"}
+    """Verificación GET/HEAD del webhook — responde 200 a cualquier proveedor."""
+    try:
+        resultado = await proveedor.validar_webhook(request)
+        if resultado is not None:
+            return PlainTextResponse(str(resultado))
+    except Exception:
+        pass
+    return PlainTextResponse("ok")
 
 
 @app.post("/webhook")

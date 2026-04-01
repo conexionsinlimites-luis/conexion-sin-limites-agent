@@ -16,7 +16,12 @@ El Excel debe tener estas columnas (primera fila = encabezados):
 IMPORTANTE:
 - El teléfono debe incluir código de país SIN el signo +  (ej: 56978016298)
 - La plantilla 'bienvenida_conexion' debe estar aprobada en Meta
-- Se asume que el parámetro {{1}} de la plantilla es el nombre del contacto
+- El parámetro {{1}} usa el primer nombre + primer apellido del contacto
+  Ejemplos:
+    "Juan Carlos Pérez González" → "Juan Pérez"
+    "Juan Pérez González"        → "Juan Pérez"
+    "María García"               → "María García"
+    "Carlos"                     → "Carlos"
 """
 
 import os
@@ -37,6 +42,27 @@ TEMPLATE_LANG   = "es"
 API_VERSION     = "v21.0"
 PAUSA_SEGUNDOS  = 1   # pausa entre envíos para respetar rate limits de Meta
 # ───────────────────────────────────────────────────────────
+
+
+def primer_nombre_apellido(nombre_completo: str) -> str:
+    """
+    Extrae el primer nombre y primer apellido de un nombre completo.
+
+    Lógica según cantidad de palabras:
+      1 palabra  → "Juan"               → "Juan"
+      2 palabras → "Juan Pérez"         → "Juan Pérez"
+      3 palabras → "Juan Pérez González"→ "Juan Pérez"   (1 nombre, 2 apellidos)
+      4+ palabras→ "Juan Carlos Pérez González" → "Juan Pérez" (2 nombres, 2 apellidos)
+    """
+    partes = nombre_completo.strip().split()
+    if len(partes) <= 2:
+        return " ".join(partes)
+    elif len(partes) == 3:
+        # Formato: nombre apellido1 apellido2 → tomar nombre + apellido1
+        return f"{partes[0]} {partes[1]}"
+    else:
+        # Formato: nombre1 nombre2 apellido1 apellido2 → tomar nombre1 + apellido1
+        return f"{partes[0]} {partes[2]}"
 
 
 def leer_excel(ruta: str) -> list[dict]:
@@ -117,10 +143,10 @@ def guardar_log(resultados: list[dict], ruta_excel: str):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Resultados"
-    ws.append(["nombre", "telefono", "estado", "detalle", "timestamp"])
+    ws.append(["nombre_completo", "nombre_plantilla", "telefono", "estado", "detalle", "timestamp"])
 
     for r in resultados:
-        ws.append([r["nombre"], r["telefono"], r["estado"], r["detalle"], r["timestamp"]])
+        ws.append([r["nombre"], r["nombre_plantilla"], r["telefono"], r["estado"], r["detalle"], r["timestamp"]])
 
     wb.save(nombre_log)
     return nombre_log
@@ -163,20 +189,22 @@ def main():
             nombre   = contacto["nombre"]
             telefono = contacto["telefono"]
 
-            ok, detalle = enviar_plantilla(cliente, nombre, telefono)
+            nombre_plantilla = primer_nombre_apellido(nombre)
+            ok, detalle = enviar_plantilla(cliente, nombre_plantilla, telefono)
             estado = "enviado" if ok else "error"
             ts = datetime.now().strftime("%H:%M:%S")
 
             resultados.append({
                 "nombre": nombre,
                 "telefono": telefono,
+                "nombre_plantilla": nombre_plantilla,
                 "estado": estado,
                 "detalle": detalle,
                 "timestamp": ts,
             })
 
             icono = "✅" if ok else "❌"
-            print(f"[{i}/{total}] {icono} {nombre} ({telefono}) — {detalle}")
+            print(f"[{i}/{total}] {icono} {nombre} → '{nombre_plantilla}' ({telefono}) — {detalle}")
 
             if ok:
                 exitosos += 1

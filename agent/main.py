@@ -9,7 +9,7 @@ Funciona con cualquier proveedor (Whapi, Meta, Twilio) gracias a la capa de prov
 import os
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 
@@ -70,37 +70,34 @@ async def webhook_verificacion(request: Request):
 async def webhook_handler(request: Request):
     """
     Recibe mensajes de WhatsApp via el proveedor configurado.
-    Procesa el mensaje, genera respuesta con Claude y la envía de vuelta.
+    Siempre retorna 200 para evitar reintentos de Meta/Whapi.
     """
+    # Parsear webhook — si falla (ej: payload de status update), ignorar y retornar 200
     try:
-        # Parsear webhook — el proveedor normaliza el formato
         mensajes = await proveedor.parsear_webhook(request)
-
-        for msg in mensajes:
-            # Ignorar mensajes propios o vacíos
-            if msg.es_propio or not msg.texto:
-                continue
-
-            logger.info(f"Mensaje de {msg.telefono}: {msg.texto}")
-
-            # Obtener historial ANTES de guardar el mensaje actual
-            # (brain.py agrega el mensaje actual, evitando duplicados)
-            historial = await obtener_historial(msg.telefono)
-
-            # Generar respuesta con Claude
-            respuesta = await generar_respuesta(msg.texto, historial)
-
-            # Guardar mensaje del usuario Y respuesta del agente en memoria
-            await guardar_mensaje(msg.telefono, "user", msg.texto)
-            await guardar_mensaje(msg.telefono, "assistant", respuesta)
-
-            # Enviar respuesta por WhatsApp via el proveedor
-            await proveedor.enviar_mensaje(msg.telefono, respuesta)
-
-            logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
-
+    except Exception as e:
+        logger.error(f"Error parseando webhook: {e}")
         return {"status": "ok"}
 
-    except Exception as e:
-        logger.error(f"Error en webhook: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    for msg in mensajes:
+        # Ignorar mensajes propios o vacíos
+        if msg.es_propio or not msg.texto:
+            continue
+
+        logger.info(f"Mensaje de {msg.telefono}: {msg.texto}")
+
+        # Cada mensaje se procesa de forma independiente para no afectar a los demás
+        try:
+            historial = await obtener_historial(msg.telefono)
+            respuesta = await generar_respuesta(msg.texto, historial)
+            await guardar_mensaje(msg.telefono, "user", msg.texto)
+            await guardar_mensaje(msg.telefono, "assistant", respuesta)
+            enviado = await proveedor.enviar_mensaje(msg.telefono, respuesta)
+            if enviado:
+                logger.info(f"Respuesta enviada a {msg.telefono}: {respuesta}")
+            else:
+                logger.error(f"enviar_mensaje retornó False para {msg.telefono} — revisar token/credenciales")
+        except Exception as e:
+            logger.error(f"Error procesando mensaje de {msg.telefono}: {e}")
+
+    return {"status": "ok"}

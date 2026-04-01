@@ -1,0 +1,82 @@
+planes_directv:
+
+  - nombre: "Plan Dúo DGO Flex"
+    precio: "$29.990 CLP"
+    canales: "50 canales | HD incluido"
+    velocidad_internet: "800 Megas simétricos"
+    incluye:
+      - "WiFi 6"
+      - "DGO incluido"
+      - "Prime Video gratis 3 meses"
+      - "Norton gratis"
+      - "Deco HD gratis"
+    promocion: "Norton gratis | Deco HD gratis | Prime Video 3 meses"
+
+  - nombre: "Plan Dúo Flex HD 800 Megas"
+    precio: "$34.990 efectivo / $30.990 PAT o PAC x12 meses"
+    canales: "51 canales | 48 en HD"
+    velocidad_internet: "800 Megas simétricos"
+    incluye:
+      - "WiFi 6"
+      - "DGO incluido"
+      - "Prime Video gratis 3 meses"
+      - "Norton gratis 3 meses"
+      - "2 plataformas flexibles: Disney+, HBO Max, Mega Go o VIX"
+
+  - nombre: "Plan Dúo Full HD"
+    precio: "$38.980 efectivo / $34.990 PAT o PAC x12 meses"
+    canales: "121 canales | 92 en HD"
+    velocidad_internet: "800 Megas simétricos"
+    incluye:
+      - "WiFi 6"
+      - "DGO incluido"
+      - "Prime Video gratis 3 meses"
+      - "2 plataformas flexibles: Disney+, HBO Max, Mega Go o VIX"
+
+  - nombre: "Plan Dúo Esencial HD"
+    precio: "$31.990 efectivo / $27.990 PAT o PAC x12 meses"
+    canales: "50 canales | 48 en HD"
+    velocidad_internet: "800 Megas simétricos"
+    incluye:
+      - "WiFi 6"
+      - "DGO incluido"
+      - "Prime Video gratis 3 meses"
+      - "Deco HD gratis"
+
+  - nombre: "Plan Solo TV Esencial HD"
+    precio: "$25.890 efectivo / $21.890 PAT o PAC x12 meses"
+    canales: "50 canales | 48 en HD"
+    velocidad_internet: null
+    incluye:
+      - "2 Decos Full HD incluidos"
+      - "DGO incluido"
+      - "Prime Video gratis 3 meses"
+      - "HBO gratis 3 meses"
+
+  - nombre: "Plan Solo TV Flex HD"
+    precio: "$28.980 efectivo / $25.980 PAT o PAC x6 meses"
+    canales: "50 canales | 48 en HD"
+    velocidad_internet: null
+    incluye:
+      - "2 Decos Full HD incluidos"
+      - "DGO incluido"
+      - "Prime Video gratis 3 meses"
+      - "HBO gratis 3 meses"
+
+  - nombre: "Plan Solo TV Full HD"
+    precio: "$38.980 efectivo / $34.980 PAT o PAC x12 meses"
+    canales: "120 canales | 92 en HD"
+    velocidad_internet: null
+    incluye:
+      - "2 Decos Full HD incluidos"
+      - "DGO incluido"
+      - "Prime Video gratis 3 meses"
+      - "HBO gratis 3 meses"
+
+  - nombre: "Plan Solo Internet 800 Megas"
+    precio: "$15.990 efectivo / $13.990 PAT o PAC x12 meses"
+    canales: null
+    velocidad_internet: "800 Megas simétricos"
+    incluye:
+      - "WiFi 6"
+      - "Norton Antivirus gratis 3 meses"

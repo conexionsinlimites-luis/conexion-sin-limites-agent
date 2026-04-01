@@ -66,5 +66,5 @@ class ProveedorMeta(ProveedorWhatsApp):
         async with httpx.AsyncClient() as client:
             r = await client.post(url, json=payload, headers=headers)
             if r.status_code != 200:
-                logger.error(f"Error Meta API: {r.status_code} — {r.text}")
-            return r.status_code == 200
+                raise RuntimeError(f"Meta API {r.status_code}: {r.text}")
+            return True

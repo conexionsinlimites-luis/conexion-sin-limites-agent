@@ -14,9 +14,10 @@ class ProveedorMeta(ProveedorWhatsApp):
     """Proveedor de WhatsApp usando la API oficial de Meta (Cloud API)."""
 
     def __init__(self):
-        self.access_token = os.getenv("META_ACCESS_TOKEN")
-        self.phone_number_id = os.getenv("META_PHONE_NUMBER_ID")
-        self.verify_token = os.getenv("META_VERIFY_TOKEN", "agentkit-verify")
+        # .strip() elimina saltos de línea o espacios que puedan colarse al pegar el token
+        self.access_token = (os.getenv("META_ACCESS_TOKEN") or "").strip()
+        self.phone_number_id = (os.getenv("META_PHONE_NUMBER_ID") or "").strip()
+        self.verify_token = (os.getenv("META_VERIFY_TOKEN") or "agentkit-verify").strip()
         self.api_version = "v21.0"
 
     async def validar_webhook(self, request: Request) -> dict | int | None:

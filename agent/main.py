@@ -7,6 +7,7 @@ Funciona con cualquier proveedor (Whapi, Meta, Twilio) gracias a la capa de prov
 """
 
 import os
+import re
 import logging
 from collections import deque
 from contextlib import asynccontextmanager
@@ -18,6 +19,9 @@ from dotenv import load_dotenv
 from agent.brain import generar_respuesta
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
+
+# Número del supervisor comercial que recibe alertas
+TELEFONO_SUPERVISOR = "56978016298"
 
 load_dotenv()
 
@@ -126,16 +130,67 @@ async def webhook_handler(request: Request):
             respuesta = await generar_respuesta(msg.texto, historial)
             _log("INFO", f"Respuesta generada: '{respuesta[:100]}'")
 
-            await guardar_mensaje(msg.telefono, "user", msg.texto)
-            await guardar_mensaje(msg.telefono, "assistant", respuesta)
+            # Detectar marcador de alerta al supervisor y procesarlo antes de enviar al cliente
+            respuesta_limpia, alerta = _extraer_alerta(respuesta)
 
-            enviado = await proveedor.enviar_mensaje(msg.telefono, respuesta)
+            await guardar_mensaje(msg.telefono, "user", msg.texto)
+            await guardar_mensaje(msg.telefono, "assistant", respuesta_limpia)
+
+            enviado = await proveedor.enviar_mensaje(msg.telefono, respuesta_limpia)
             if enviado:
                 _log("INFO", f"Respuesta enviada OK a {msg.telefono}")
             else:
                 _log("ERROR", f"enviar_mensaje falló para {msg.telefono} — revisar token/credenciales en Railway")
 
+            # Enviar alerta al supervisor si Valentina detectó dirección o solicitud de contacto
+            if alerta:
+                await _enviar_alerta_supervisor(alerta, msg.telefono)
+
         except Exception as e:
             _log("ERROR", f"Error procesando mensaje de {msg.telefono}: {e}")
 
     return {"status": "ok"}
+
+
+def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:
+    """
+    Detecta y extrae el marcador [ALERTA_SUPERVISOR|...] de la respuesta de Valentina.
+    Retorna (respuesta_sin_marcador, datos_alerta_o_None).
+    """
+    patron = r'\[ALERTA_SUPERVISOR\|nombre=([^|]*)\|tel=([^|]*)\|dir=([^\]]*)\]'
+    match = re.search(patron, respuesta)
+    if not match:
+        return respuesta, None
+
+    datos = {
+        "nombre": match.group(1).strip(),
+        "tel":    match.group(2).strip(),
+        "dir":    match.group(3).strip(),
+    }
+    respuesta_limpia = re.sub(patron, "", respuesta).strip()
+    return respuesta_limpia, datos
+
+
+async def _enviar_alerta_supervisor(datos: dict, telefono_cliente: str):
+    """Envía una alerta al supervisor comercial cuando Valentina captura una dirección o solicitud."""
+    nombre = datos.get("nombre", "Cliente")
+    tel    = datos.get("tel") or telefono_cliente
+    dir_   = datos.get("dir", "pendiente")
+
+    mensaje = (
+        f"🔔 *ALERTA — Conexion Sin Limites*\n\n"
+        f"Valentina tiene un cliente listo para atención:\n\n"
+        f"👤 *Nombre:* {nombre}\n"
+        f"📱 *Teléfono:* +{tel}\n"
+        f"📍 *Dirección:* {dir_}\n\n"
+        f"Respóndele directamente a este número."
+    )
+
+    try:
+        enviado = await proveedor.enviar_mensaje(TELEFONO_SUPERVISOR, mensaje)
+        if enviado:
+            _log("INFO", f"Alerta supervisor enviada — cliente: {nombre} ({tel})")
+        else:
+            _log("ERROR", f"No se pudo enviar alerta al supervisor para cliente {tel}")
+    except Exception as e:
+        _log("ERROR", f"Error enviando alerta supervisor: {e}")

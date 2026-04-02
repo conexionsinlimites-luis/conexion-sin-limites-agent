@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from agent.brain import generar_respuesta
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
+from agent.transcriber import transcribir
 
 # Número del supervisor comercial que recibe alertas
 TELEFONO_SUPERVISOR = "56978016298"
@@ -120,6 +121,20 @@ async def webhook_handler(request: Request):
         if msg.es_propio or not msg.texto:
             _log("INFO", f"Mensaje ignorado — es_propio={msg.es_propio} texto='{msg.texto}'")
             continue
+
+        # Si es audio, transcribirlo antes de procesar
+        if msg.audio_id:
+            try:
+                _log("INFO", f"Audio recibido de {msg.telefono} — transcribiendo con Whisper...")
+                audio_bytes, mime_type = await proveedor.descargar_audio(msg.audio_id)
+                msg.texto = await transcribir(audio_bytes, mime_type)
+                if not msg.texto:
+                    _log("ERROR", f"Transcripción vacía para audio de {msg.telefono}")
+                    continue
+                _log("INFO", f"Transcripción: '{msg.texto[:100]}'")
+            except Exception as e:
+                _log("ERROR", f"Error transcribiendo audio de {msg.telefono}: {e}")
+                continue
 
         _log("INFO", f"Procesando mensaje de {msg.telefono}: '{msg.texto}'")
 

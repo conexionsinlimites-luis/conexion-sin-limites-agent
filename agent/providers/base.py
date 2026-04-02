@@ -15,9 +15,10 @@ from fastapi import Request
 class MensajeEntrante:
     """Mensaje normalizado — mismo formato sin importar el proveedor."""
     telefono: str       # Número del remitente
-    texto: str          # Contenido del mensaje
+    texto: str          # Contenido del mensaje (o transcripción del audio)
     mensaje_id: str     # ID único del mensaje
     es_propio: bool     # True si lo envió el agente (se ignora)
+    audio_id: str = ""  # Media ID del audio (si el mensaje es de voz)
 
 
 class ProveedorWhatsApp(ABC):

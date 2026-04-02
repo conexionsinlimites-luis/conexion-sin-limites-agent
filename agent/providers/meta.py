@@ -31,21 +31,62 @@ class ProveedorMeta(ProveedorWhatsApp):
         return None
 
     async def parsear_webhook(self, request: Request) -> list[MensajeEntrante]:
-        """Parsea el payload anidado de Meta Cloud API."""
+        """Parsea el payload anidado de Meta Cloud API. Maneja texto y audio."""
         body = await request.json()
         mensajes = []
         for entry in body.get("entry", []):
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 for msg in value.get("messages", []):
-                    if msg.get("type") == "text":
+                    tipo = msg.get("type")
+                    telefono = msg.get("from", "")
+                    mensaje_id = msg.get("id", "")
+
+                    if tipo == "text":
                         mensajes.append(MensajeEntrante(
-                            telefono=msg.get("from", ""),
+                            telefono=telefono,
                             texto=msg.get("text", {}).get("body", ""),
-                            mensaje_id=msg.get("id", ""),
+                            mensaje_id=mensaje_id,
                             es_propio=False,
                         ))
+                    elif tipo == "audio":
+                        # Guardar el media_id para transcribir en main.py
+                        audio_id = msg.get("audio", {}).get("id", "")
+                        if audio_id:
+                            mensajes.append(MensajeEntrante(
+                                telefono=telefono,
+                                texto="",
+                                mensaje_id=mensaje_id,
+                                es_propio=False,
+                                audio_id=audio_id,
+                            ))
         return mensajes
+
+    async def descargar_audio(self, media_id: str) -> tuple[bytes, str]:
+        """
+        Descarga un archivo de audio desde Meta API.
+        Retorna (bytes_del_audio, mime_type).
+        """
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        async with httpx.AsyncClient() as client:
+            # Paso 1: obtener la URL de descarga
+            r = await client.get(
+                f"https://graph.facebook.com/{self.api_version}/{media_id}",
+                headers=headers,
+            )
+            if r.status_code != 200:
+                raise RuntimeError(f"Error obteniendo URL de media: {r.status_code} {r.text}")
+            data = r.json()
+            url_descarga = data.get("url")
+            mime_type = data.get("mime_type", "audio/ogg")
+
+            # Paso 2: descargar el archivo binario
+            r2 = await client.get(url_descarga, headers=headers)
+            if r2.status_code != 200:
+                raise RuntimeError(f"Error descargando audio: {r2.status_code}")
+
+        return r2.content, mime_type
 
     async def enviar_mensaje(self, telefono: str, mensaje: str) -> bool:
         """Envía mensaje via Meta WhatsApp Cloud API."""

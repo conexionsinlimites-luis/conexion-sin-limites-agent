@@ -1,11 +1,11 @@
 # agent/providers/meta.py — Adaptador para Meta WhatsApp Cloud API
 # Generado por AgentKit
 
-import os
 import logging
 import httpx
 from fastapi import Request
 from agent.providers.base import ProveedorWhatsApp, MensajeEntrante
+from agent.config import META_ACCESS_TOKEN, META_PHONE_NUMBER_ID, META_VERIFY_TOKEN
 
 logger = logging.getLogger("agentkit")
 
@@ -14,10 +14,10 @@ class ProveedorMeta(ProveedorWhatsApp):
     """Proveedor de WhatsApp usando la API oficial de Meta (Cloud API)."""
 
     def __init__(self):
-        # join().split() elimina TODOS los espacios y saltos de línea, incluso los del medio
-        self.access_token = "".join((os.getenv("META_ACCESS_TOKEN") or "").split())
-        self.phone_number_id = "".join((os.getenv("META_PHONE_NUMBER_ID") or "").split())
-        self.verify_token = "".join((os.getenv("META_VERIFY_TOKEN") or "agentkit-verify").split())
+        # Los tokens ya vienen limpios desde config.py (sin espacios ni saltos de línea)
+        self.access_token = META_ACCESS_TOKEN
+        self.phone_number_id = META_PHONE_NUMBER_ID
+        self.verify_token = META_VERIFY_TOKEN or "agentkit-verify"
         self.api_version = "v21.0"
 
     async def validar_webhook(self, request: Request) -> dict | int | None:

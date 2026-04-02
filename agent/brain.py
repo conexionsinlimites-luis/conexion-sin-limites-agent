@@ -6,17 +6,15 @@ Lógica de IA del agente. Lee el system prompt de prompts.yaml
 y genera respuestas usando la API de Anthropic Claude.
 """
 
-import os
 import yaml
 import logging
 from anthropic import AsyncAnthropic
-from dotenv import load_dotenv
+from agent.config import ANTHROPIC_API_KEY
 
-load_dotenv()
 logger = logging.getLogger("agentkit")
 
 # Cliente de Anthropic
-client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 
 def cargar_config_prompts() -> dict:

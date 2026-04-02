@@ -6,15 +6,9 @@ Sistema de memoria del agente. Guarda el historial de conversaciones
 por número de teléfono usando aiosqlite directamente (compatible con Python 3.14+).
 """
 
-import os
 import aiosqlite
 from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Ruta del archivo de base de datos
-DB_PATH = os.getenv("DB_PATH", "agentkit.db")
+from agent.config import DB_PATH
 
 
 async def inicializar_db():

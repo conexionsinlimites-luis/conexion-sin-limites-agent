@@ -6,7 +6,6 @@ Servidor principal del agente de WhatsApp.
 Funciona con cualquier proveedor (Whapi, Meta, Twilio) gracias a la capa de providers.
 """
 
-import os
 import re
 import logging
 from collections import deque
@@ -14,27 +13,23 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
-from dotenv import load_dotenv
 
 from agent.brain import generar_respuesta
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
 from agent.transcriber import transcribir
+from agent.config import PORT, ENVIRONMENT
 
 # Número del supervisor comercial que recibe alertas
 TELEFONO_SUPERVISOR = "56978016298"
 
-load_dotenv()
-
 # Configuración de logging según entorno
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 log_level = logging.DEBUG if ENVIRONMENT == "development" else logging.INFO
 logging.basicConfig(level=log_level)
 logger = logging.getLogger("agentkit")
 
 # Proveedor de WhatsApp (se configura en .env con WHATSAPP_PROVIDER)
 proveedor = obtener_proveedor()
-PORT = int(os.getenv("PORT", 8000))
 
 # Buffer en memoria con los últimos 20 eventos (para /debug)
 _eventos = deque(maxlen=20)

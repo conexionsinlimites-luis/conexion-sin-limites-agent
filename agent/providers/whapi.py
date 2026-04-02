@@ -1,11 +1,11 @@
 # agent/providers/whapi.py — Adaptador para Whapi.cloud
 # Generado por AgentKit
 
-import os
 import logging
 import httpx
 from fastapi import Request
 from agent.providers.base import ProveedorWhatsApp, MensajeEntrante
+from agent.config import WHAPI_TOKEN
 
 logger = logging.getLogger("agentkit")
 
@@ -14,7 +14,7 @@ class ProveedorWhapi(ProveedorWhatsApp):
     """Proveedor de WhatsApp usando Whapi.cloud (REST API simple)."""
 
     def __init__(self):
-        self.token = os.getenv("WHAPI_TOKEN")
+        self.token = WHAPI_TOKEN
         self.url_envio = "https://gate.whapi.cloud/messages/text"
 
     async def parsear_webhook(self, request: Request) -> list[MensajeEntrante]:

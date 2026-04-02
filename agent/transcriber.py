@@ -6,17 +6,15 @@ Recibe bytes de audio desde Meta API y los transcribe usando Whisper-1 de OpenAI
 Soporta los formatos de audio que envía WhatsApp: ogg/opus, mp4, etc.
 """
 
-import os
 import io
 import logging
 from openai import AsyncOpenAI
-from dotenv import load_dotenv
+from agent.config import OPENAI_API_KEY
 
-load_dotenv()
 logger = logging.getLogger("agentkit")
 
 # Cliente de OpenAI (Whisper)
-_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # Extensión por mime_type para que Whisper identifique el formato
 _MIME_A_EXT = {
@@ -41,7 +39,7 @@ async def transcribir(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
     Returns:
         Texto transcrito, o mensaje de error si falla
     """
-    if not os.getenv("OPENAI_API_KEY"):
+    if not OPENAI_API_KEY:
         logger.error("OPENAI_API_KEY no configurada — no se puede transcribir")
         return ""
 

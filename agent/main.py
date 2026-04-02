@@ -118,7 +118,7 @@ async def webhook_handler(request: Request):
         return {"status": "ok"}
 
     for msg in mensajes:
-        if msg.es_propio or not msg.texto:
+        if msg.es_propio or (not msg.texto and not msg.audio_id):
             _log("INFO", f"Mensaje ignorado — es_propio={msg.es_propio} texto='{msg.texto}'")
             continue
 

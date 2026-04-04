@@ -160,13 +160,11 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Valentina CRM — Conexion Sin Limites</title>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" crossorigin>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-  /* ═══════════════════════════════════════════════════
-     CONEXION SIN LIMITES — Dark Futurista Premium
-     #000000 | #00D4FF neon | #FF2233 rojo estrella
-     ═══════════════════════════════════════════════════ */
+  /* CONEXION SIN LIMITES - Dark Futurista Premium
+     #000000 | #00D4FF neon | #FF2233 rojo estrella */
   :root {
     --neon:       #00D4FF;
     --neon-dim:   rgba(0, 212, 255, 0.15);
@@ -249,12 +247,13 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     display: inline-block;
   }
   .logo-x::after {
-    content: '✦';
+    content: '*';
     position: absolute;
-    top: -6px; right: -5px;
-    font-size: .45em;
+    top: -5px; right: -5px;
+    font-size: .4em;
     color: var(--red);
     text-shadow: 0 0 8px var(--red);
+    font-family: Arial, sans-serif;
   }
 
   .logo-sub {
@@ -299,7 +298,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     display: flex; align-items: center; gap: .75rem;
     opacity: .7;
   }
-  .section-label::before { content: '//'; opacity: .5; }
+  .section-label::before { content: '//'; opacity: .5; font-family: Arial, monospace; }
   .section-label::after  { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, var(--border) 0%, transparent 100%); }
 
   /* ── KPI grid ── */
@@ -339,19 +338,16 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     box-shadow: 0 0 25px rgba(0,212,255,0.1);
   }
 
-  .kpi-icon {
-    font-size: 1.2rem; margin-bottom: .6rem; opacity: .6;
-    display: block;
-  }
   .kpi-label {
     font-size: .6rem; font-weight: 600;
     color: var(--txt2); text-transform: uppercase;
     letter-spacing: .12em; margin-bottom: .5rem;
   }
   .kpi-value {
-    font-family: 'Orbitron', sans-serif;
+    font-family: 'Arial Black', 'Arial', 'Helvetica Neue', sans-serif;
     font-size: 2.6rem; font-weight: 900; line-height: 1;
     transition: text-shadow .3s;
+    letter-spacing: -.02em;
   }
   .kpi-value.neon  { color: var(--neon);  text-shadow: 0 0 20px var(--neon-glow), 0 0 40px rgba(0,212,255,0.2); }
   .kpi-value.red   { color: var(--red);   text-shadow: 0 0 20px var(--red-glow),  0 0 40px rgba(255,34,51,0.2); }
@@ -388,7 +384,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     display: flex; align-items: center; gap: .5rem;
     opacity: .85;
   }
-  .card-title::before { content: '›'; font-size: 1em; }
+  .card-title::before { content: '>'; font-size: 1em; font-family: Arial, sans-serif; }
 
   /* ── chart ── */
   .chart-wrap { position: relative; height: 260px; }
@@ -475,8 +471,8 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     color: var(--txt3); font-size: .8rem;
     letter-spacing: .05em;
   }
-  .empty::before { content: '— '; }
-  .empty::after  { content: ' —'; }
+  .empty::before { content: ''; }
+  .empty::after  { content: ''; }
 
   /* ── scan line decorativa en header ── */
   .scan-line {
@@ -512,40 +508,34 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <div class="section-label" style="margin-top:1.5rem">Resumen del sistema</div>
   <div class="kpi-grid">
     <div class="kpi-card primary">
-      <span class="kpi-icon">◈</span>
       <div class="kpi-label">Total Leads</div>
-      <div class="kpi-value neon" id="k-total">—</div>
+      <div class="kpi-value neon" id="k-total">0</div>
       <div class="kpi-sub">registros activos</div>
     </div>
     <div class="kpi-card">
-      <span class="kpi-icon">◉</span>
       <div class="kpi-label">Leads Calientes</div>
-      <div class="kpi-value red" id="k-hot">—</div>
+      <div class="kpi-value red" id="k-hot">0</div>
       <div class="kpi-sub">caliente + listo cierre</div>
     </div>
     <div class="kpi-card">
-      <span class="kpi-icon">✓</span>
       <div class="kpi-label">Conversiones</div>
-      <div class="kpi-value green" id="k-closed">—</div>
+      <div class="kpi-value green" id="k-closed">0</div>
       <div class="kpi-sub">leads cerrados</div>
     </div>
     <div class="kpi-card">
-      <span class="kpi-icon">◎</span>
       <div class="kpi-label">Score Promedio</div>
-      <div class="kpi-value white" id="k-score">—</div>
+      <div class="kpi-value white" id="k-score">0</div>
       <div class="kpi-sub">sobre 100 pts</div>
     </div>
     <div class="kpi-card">
-      <span class="kpi-icon">▲</span>
       <div class="kpi-label">Mensajes Hoy</div>
-      <div class="kpi-value white" id="k-msgs">—</div>
+      <div class="kpi-value white" id="k-msgs">0</div>
       <div class="kpi-sub">en historial CRM</div>
     </div>
     <div class="kpi-card">
-      <span class="kpi-icon">◷</span>
       <div class="kpi-label">Follow-ups</div>
-      <div class="kpi-value neon" id="k-followups">—</div>
-      <div class="kpi-sub">pendientes de envío</div>
+      <div class="kpi-value neon" id="k-followups">0</div>
+      <div class="kpi-sub">pendientes de envio</div>
     </div>
   </div>
 

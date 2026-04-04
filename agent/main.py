@@ -7,6 +7,7 @@ Funciona con cualquier proveedor (Whapi, Meta, Twilio) gracias a la capa de prov
 """
 
 import re
+import asyncio
 import logging
 from collections import deque
 from contextlib import asynccontextmanager
@@ -19,6 +20,8 @@ from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
 from agent.transcriber import transcribir
 from agent.config import PORT, ENVIRONMENT
+import agent.crm as crm
+from agent.scheduler import iniciar_scheduler
 
 # Número del supervisor comercial que recibe alertas
 TELEFONO_SUPERVISOR = "56978016298"
@@ -48,12 +51,26 @@ def _log(nivel: str, mensaje: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Inicializa la base de datos al arrancar el servidor."""
+    """Inicializa bases de datos y arranca el scheduler de follow-ups."""
     await inicializar_db()
+    await crm.init_db()
     _log("INFO", "Base de datos inicializada")
+    _log("INFO", "CRM Valentina inicializado")
     _log("INFO", f"Servidor AgentKit en puerto {PORT}")
     _log("INFO", f"Proveedor: {proveedor.__class__.__name__}")
+
+    # Arrancar scheduler de follow-ups en background
+    tarea_scheduler = asyncio.create_task(iniciar_scheduler(proveedor))
+    _log("INFO", "Scheduler de follow-ups iniciado")
+
     yield
+
+    # Cancelar scheduler al apagar el servidor
+    tarea_scheduler.cancel()
+    try:
+        await tarea_scheduler
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
@@ -134,6 +151,36 @@ async def webhook_handler(request: Request):
         _log("INFO", f"Procesando mensaje de {msg.telefono}: '{msg.texto}'")
 
         try:
+            # --- CRM: Registrar lead si es nuevo ---
+            await crm.crear_o_actualizar_lead(msg.telefono)
+            await crm.cancelar_followups(msg.telefono)
+
+            # --- CRM: Detectar intención y objeción en el mensaje entrante ---
+            intencion = crm.detectar_intencion(msg.texto)
+            objecion  = crm.detectar_objecion(msg.texto)
+
+            await crm.actualizar_score(msg.telefono, intencion)
+            if objecion:
+                await crm.guardar_objecion(msg.telefono, objecion)
+                _log("INFO", f"Objecion detectada en {msg.telefono}: {objecion}")
+
+            # --- CRM: Avanzar estado según intención ---
+            lead = await crm.obtener_lead(msg.telefono)
+            estado_actual = lead["estado"] if lead else "nuevo"
+            nuevo_estado  = _calcular_nuevo_estado(estado_actual, intencion)
+
+            if nuevo_estado != estado_actual:
+                await crm.actualizar_estado(msg.telefono, nuevo_estado)
+                estado_actual = nuevo_estado
+                _log("INFO", f"Lead {msg.telefono} avanzó a estado: {estado_actual}")
+            else:
+                await crm.incrementar_mensajes_estado(msg.telefono)
+
+            # --- CRM: Detectar estancamiento ---
+            lead_ref = await crm.obtener_lead(msg.telefono)
+            if lead_ref and crm.detectar_estancamiento(lead_ref["mensajes_en_estado"], estado_actual):
+                _log("INFO", f"Estancamiento detectado — {msg.telefono} lleva {lead_ref['mensajes_en_estado']} mensajes en '{estado_actual}'")
+
             historial = await obtener_historial(msg.telefono)
             _log("INFO", f"Historial recuperado: {len(historial)} mensajes previos")
 
@@ -143,8 +190,11 @@ async def webhook_handler(request: Request):
             # Detectar marcador de alerta al supervisor y procesarlo antes de enviar al cliente
             respuesta_limpia, alerta = _extraer_alerta(respuesta)
 
+            # Guardar en memoria conversacional y en historial CRM
             await guardar_mensaje(msg.telefono, "user", msg.texto)
             await guardar_mensaje(msg.telefono, "assistant", respuesta_limpia)
+            await crm.guardar_mensaje(msg.telefono, "user", msg.texto, estado_actual, intencion)
+            await crm.guardar_mensaje(msg.telefono, "assistant", respuesta_limpia, estado_actual, None)
 
             enviado = await proveedor.enviar_mensaje(msg.telefono, respuesta_limpia)
             if enviado:
@@ -152,14 +202,33 @@ async def webhook_handler(request: Request):
             else:
                 _log("ERROR", f"enviar_mensaje falló para {msg.telefono} — revisar token/credenciales en Railway")
 
-            # Enviar alerta al supervisor si Valentina detectó dirección o solicitud de contacto
+            # Enviar alerta al supervisor y marcar lead como listo para cierre
             if alerta:
                 await _enviar_alerta_supervisor(alerta, msg.telefono)
+                await crm.actualizar_estado(msg.telefono, "listo_para_cierre")
+                dir_ = alerta.get("dir", "")
+                if dir_ and dir_ != "pendiente":
+                    await crm.crear_o_actualizar_lead(msg.telefono, direccion=dir_)
+                _log("INFO", f"Lead {msg.telefono} marcado como listo_para_cierre en CRM")
 
         except Exception as e:
             _log("ERROR", f"Error procesando mensaje de {msg.telefono}: {e}")
 
     return {"status": "ok"}
+
+
+def _calcular_nuevo_estado(estado_actual: str, intencion: str) -> str:
+    """
+    Avanza el estado del lead en la máquina de estados según la intención detectada.
+    Nunca retrocede — solo avanza o se mantiene.
+    """
+    if estado_actual == "nuevo":
+        return "contactado"
+    if intencion == "alta" and estado_actual in ("contactado", "interesado", "tibio"):
+        return "caliente"
+    if intencion == "media" and estado_actual in ("contactado",):
+        return "interesado"
+    return estado_actual
 
 
 def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:

@@ -2,19 +2,22 @@
 # Conexion Sin Limites
 
 """
-Lee un archivo Excel con columnas 'nombre' y 'telefono',
+Lee un archivo Excel con columnas 'cliente', 'tel_limpio' y 'prioridad',
 y envía la plantilla 'bienvenida_conexion' a cada número via Meta Cloud API.
 
 Uso:
-    python scripts/envio_masivo.py contactos.xlsx
+    python scripts/envio_masivo.py archivo.xlsx [--prioridad N] [--limite N]
+
+    --prioridad  Filtra solo filas con ese valor en columna 'prioridad' (default: 1)
+    --limite     Máximo de contactos a enviar (default: 100)
 
 El Excel debe tener estas columnas (primera fila = encabezados):
-    nombre    | telefono
-    Juan Pérez| 56912345678
-    María G.  | 56987654321
+    cliente           | tel_limpio    | prioridad
+    Juan Pérez        | 56912345678   | 1
+    María García      | 56987654321   | 2
 
 IMPORTANTE:
-- El teléfono debe incluir código de país SIN el signo +  (ej: 56978016298)
+- tel_limpio debe incluir código de país SIN el signo +  (ej: 56978016298)
 - La plantilla 'bienvenida_conexion' debe estar aprobada en Meta
 - El parámetro {{1}} usa el primer nombre + primer apellido del contacto
   Ejemplos:
@@ -27,6 +30,7 @@ IMPORTANTE:
 import os
 import sys
 import time
+import argparse
 import httpx
 import openpyxl
 from datetime import datetime
@@ -38,7 +42,7 @@ load_dotenv()
 ACCESS_TOKEN    = "".join((os.getenv("META_ACCESS_TOKEN") or "").split())
 PHONE_NUMBER_ID = "".join((os.getenv("META_PHONE_NUMBER_ID") or "").split())
 TEMPLATE_NAME   = "bienvenida_conexion"
-TEMPLATE_LANG   = "es"
+TEMPLATE_LANG   = "es_CL"
 API_VERSION     = "v21.0"
 PAUSA_SEGUNDOS  = 1   # pausa entre envíos para respetar rate limits de Meta
 # ───────────────────────────────────────────────────────────
@@ -65,8 +69,12 @@ def primer_nombre_apellido(nombre_completo: str) -> str:
         return f"{partes[0]} {partes[2]}"
 
 
-def leer_excel(ruta: str) -> list[dict]:
-    """Lee el Excel y retorna lista de {nombre, telefono}."""
+def leer_excel(ruta: str, prioridad: int = 1, limite: int = 100) -> list[dict]:
+    """
+    Lee el Excel y retorna lista de {nombre, telefono} filtrando por prioridad y limite.
+
+    Columnas requeridas: 'cliente', 'tel_limpio', 'prioridad'
+    """
     wb = openpyxl.load_workbook(ruta)
     ws = wb.active
 
@@ -74,17 +82,32 @@ def leer_excel(ruta: str) -> list[dict]:
     encabezados = {str(cell.value).strip().lower(): idx
                    for idx, cell in enumerate(next(ws.iter_rows(min_row=1, max_row=1)), start=1)}
 
-    if "nombre" not in encabezados or "telefono" not in encabezados:
-        print("ERROR: El Excel debe tener columnas 'nombre' y 'telefono'")
+    requeridas = ["cliente", "tel_limpio", "prioridad"]
+    faltantes = [c for c in requeridas if c not in encabezados]
+    if faltantes:
+        print(f"ERROR: Faltan columnas en el Excel: {', '.join(faltantes)}")
+        print(f"Columnas encontradas: {', '.join(encabezados.keys())}")
         sys.exit(1)
 
-    col_nombre   = encabezados["nombre"]
-    col_telefono = encabezados["telefono"]
+    col_nombre    = encabezados["cliente"]
+    col_telefono  = encabezados["tel_limpio"]
+    col_prioridad = encabezados["prioridad"]
 
     contactos = []
+    omitidos  = 0
     for fila in ws.iter_rows(min_row=2, values_only=True):
-        nombre   = str(fila[col_nombre - 1] or "").strip()
-        telefono = str(fila[col_telefono - 1] or "").strip()
+        nombre        = str(fila[col_nombre - 1] or "").strip()
+        telefono      = str(fila[col_telefono - 1] or "").strip()
+        prio_valor    = fila[col_prioridad - 1]
+
+        # Filtrar por prioridad
+        try:
+            if int(prio_valor) != prioridad:
+                omitidos += 1
+                continue
+        except (TypeError, ValueError):
+            omitidos += 1
+            continue
 
         # Limpiar teléfono: remover +, espacios y guiones
         telefono = telefono.replace("+", "").replace(" ", "").replace("-", "")
@@ -92,6 +115,10 @@ def leer_excel(ruta: str) -> list[dict]:
         if nombre and telefono:
             contactos.append({"nombre": nombre, "telefono": telefono})
 
+        if len(contactos) >= limite:
+            break
+
+    print(f"Filas omitidas (prioridad != {prioridad}): {omitidos}")
     return contactos
 
 
@@ -153,11 +180,15 @@ def guardar_log(resultados: list[dict], ruta_excel: str):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Uso: python scripts/envio_masivo.py archivo.xlsx")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Envío masivo de plantilla WhatsApp")
+    parser.add_argument("archivo", help="Ruta al archivo Excel")
+    parser.add_argument("--prioridad", type=int, default=1,
+                        help="Valor de prioridad a filtrar (default: 1)")
+    parser.add_argument("--limite", type=int, default=100,
+                        help="Máximo de contactos a enviar (default: 100)")
+    args = parser.parse_args()
 
-    ruta_excel = sys.argv[1]
+    ruta_excel = args.archivo
     if not os.path.exists(ruta_excel):
         print(f"ERROR: No se encontró el archivo '{ruta_excel}'")
         sys.exit(1)
@@ -166,15 +197,15 @@ def main():
         print("ERROR: META_ACCESS_TOKEN o META_PHONE_NUMBER_ID no están configurados en .env")
         sys.exit(1)
 
-    # Leer contactos
-    contactos = leer_excel(ruta_excel)
+    # Leer contactos filtrados por prioridad y limitados
+    contactos = leer_excel(ruta_excel, prioridad=args.prioridad, limite=args.limite)
     total = len(contactos)
-    print(f"\nContactos cargados: {total}")
+    print(f"\nContactos cargados: {total} (prioridad={args.prioridad}, limite={args.limite})")
     print(f"Plantilla: {TEMPLATE_NAME} | Idioma: {TEMPLATE_LANG}")
-    print(f"Phone Number ID: {PHONE_NUMBER_ID}")
+    print(f"Phone Number ID: {PHONE_NUMBER_ID} (+56941762315)")
     print("-" * 50)
 
-    confirmacion = input(f"¿Enviar a {total} contactos? (si/no): ").strip().lower()
+    confirmacion = input(f"Enviar a {total} contactos? (si/no): ").strip().lower()
     if confirmacion != "si":
         print("Cancelado.")
         sys.exit(0)
@@ -203,8 +234,8 @@ def main():
                 "timestamp": ts,
             })
 
-            icono = "✅" if ok else "❌"
-            print(f"[{i}/{total}] {icono} {nombre} → '{nombre_plantilla}' ({telefono}) — {detalle}")
+            icono = "OK" if ok else "ERROR"
+            print(f"[{i}/{total}] {icono} {nombre} -> '{nombre_plantilla}' ({telefono}) - {detalle}")
 
             if ok:
                 exitosos += 1
@@ -220,10 +251,10 @@ def main():
 
     print()
     print("=" * 50)
-    print(f"  Envío completado")
-    print(f"  ✅ Exitosos : {exitosos}")
-    print(f"  ❌ Fallidos : {fallidos}")
-    print(f"  📄 Log      : {archivo_log}")
+    print(f"  Envio completado")
+    print(f"  Exitosos : {exitosos}")
+    print(f"  Fallidos : {fallidos}")
+    print(f"  Log      : {archivo_log}")
     print("=" * 50)
 
 

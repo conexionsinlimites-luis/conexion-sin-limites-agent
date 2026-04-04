@@ -23,7 +23,12 @@
       "Bash(curl -s https://conexion-sin-limites-agent-production.up.railway.app/debug)",
       "Bash(python -m json.tool)",
       "Bash(curl:*)",
-      "Bash(knowledge/planes_directv.yaml:*)"
+      "Bash(knowledge/planes_directv.yaml:*)",
+      "Bash(python:*)",
+      "Bash(taskkill:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python scripts/crm_leads.py)",
+      "Bash(netstat -ano)",
+      "Bash(xargs -r -I{} taskkill //F //PID {})"
     ]
   }
 }

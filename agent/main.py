@@ -22,6 +22,7 @@ from agent.transcriber import transcribir
 from agent.config import PORT, ENVIRONMENT
 import agent.crm as crm
 from agent.scheduler import iniciar_scheduler
+from agent.dashboard import router as dashboard_router
 
 # Número del supervisor comercial que recibe alertas
 TELEFONO_SUPERVISOR = "56978016298"
@@ -78,6 +79,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+app.include_router(dashboard_router)
 
 
 @app.get("/")

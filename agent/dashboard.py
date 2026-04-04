@@ -160,198 +160,397 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Valentina CRM — Conexion Sin Limites</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
+  /* ═══════════════════════════════════════════════════
+     CONEXION SIN LIMITES — Dark Futurista Premium
+     #000000 | #00D4FF neon | #FF2233 rojo estrella
+     ═══════════════════════════════════════════════════ */
   :root {
-    --gold:    #c9a227;
-    --gold-lt: #e8c547;
-    --bg:      #0a0a0a;
-    --card:    #141414;
-    --card2:   #1c1c1c;
-    --border:  #2a2a2a;
-    --txt:     #f0f0f0;
-    --txt2:    #888;
-    --red:     #e74c3c;
-    --green:   #2ecc71;
-    --blue:    #3498db;
+    --neon:       #00D4FF;
+    --neon-dim:   rgba(0, 212, 255, 0.15);
+    --neon-glow:  rgba(0, 212, 255, 0.4);
+    --red:        #FF2233;
+    --red-glow:   rgba(255, 34, 51, 0.4);
+    --bg:         #000000;
+    --txt:        #FFFFFF;
+    --txt2:       rgba(255,255,255,0.45);
+    --txt3:       rgba(255,255,255,0.2);
+    --glass:      rgba(255,255,255,0.03);
+    --glass-h:    rgba(0,212,255,0.06);
+    --border:     rgba(0,212,255,0.18);
+    --border-h:   rgba(0,212,255,0.5);
+    --green:      #00FF88;
+    --orange:     #FF8C00;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--txt); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--txt);
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── fondo animado ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0;
+    background:
+      radial-gradient(ellipse 80% 40% at 50% -10%, rgba(0,212,255,0.07) 0%, transparent 70%),
+      radial-gradient(ellipse 40% 30% at 100% 100%, rgba(255,34,51,0.04) 0%, transparent 60%);
+    pointer-events: none;
+  }
 
   /* ── header ── */
   header {
-    background: linear-gradient(135deg, #111 0%, #1a1500 100%);
-    border-bottom: 1px solid var(--gold);
-    padding: 0 2rem;
-    height: 64px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(0,0,0,0.85);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 1px 40px rgba(0,212,255,0.08);
+    padding: 0 2.5rem;
+    height: 70px;
+    display: flex; align-items: center; justify-content: space-between;
   }
-  .logo { display: flex; align-items: center; gap: .75rem; }
-  .logo-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 8px var(--gold); }
-  .logo-name { font-size: 1.1rem; font-weight: 700; color: var(--gold); letter-spacing: .05em; }
-  .logo-sub  { font-size: .75rem; color: var(--txt2); margin-top: 1px; }
+
+  .logo { display: flex; align-items: center; gap: 1rem; }
+
+  .logo-icon {
+    width: 38px; height: 38px;
+    border: 1.5px solid var(--neon);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 12px var(--neon-glow), inset 0 0 12px rgba(0,212,255,0.05);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.1rem; font-weight: 900;
+    color: var(--neon);
+    text-shadow: 0 0 8px var(--neon);
+    flex-shrink: 0;
+  }
+
+  .logo-text-wrap { display: flex; flex-direction: column; }
+
+  .logo-name {
+    font-family: 'Orbitron', sans-serif;
+    font-size: .95rem; font-weight: 700;
+    letter-spacing: .15em; line-height: 1;
+    color: var(--txt);
+    text-shadow: 0 0 20px rgba(255,255,255,0.3);
+  }
+
+  .logo-x {
+    color: var(--red);
+    text-shadow: 0 0 10px var(--red), 0 0 20px var(--red-glow);
+    position: relative;
+    display: inline-block;
+  }
+  .logo-x::after {
+    content: '✦';
+    position: absolute;
+    top: -6px; right: -5px;
+    font-size: .45em;
+    color: var(--red);
+    text-shadow: 0 0 8px var(--red);
+  }
+
+  .logo-sub {
+    font-size: .65rem; font-weight: 500;
+    color: var(--neon); letter-spacing: .2em;
+    text-transform: uppercase; margin-top: 3px;
+    opacity: .8;
+  }
+
   .header-right { display: flex; align-items: center; gap: 1.5rem; }
+
   .live-badge {
-    display: flex; align-items: center; gap: .4rem;
-    background: #0d1a0d; border: 1px solid #2ecc71;
-    border-radius: 20px; padding: .3rem .8rem;
-    font-size: .72rem; color: #2ecc71; font-weight: 600;
+    display: flex; align-items: center; gap: .45rem;
+    border: 1px solid var(--green);
+    border-radius: 20px; padding: .35rem 1rem;
+    font-size: .7rem; font-weight: 700;
+    color: var(--green); letter-spacing: .08em;
+    background: rgba(0,255,136,0.05);
+    box-shadow: 0 0 10px rgba(0,255,136,0.15);
   }
-  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #2ecc71; animation: pulse 1.5s infinite; }
-  #last-update { font-size: .75rem; color: var(--txt2); }
+  .live-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: blink 1.4s infinite;
+  }
+
+  #last-update {
+    font-size: .7rem; color: var(--txt2);
+    font-family: 'Space Grotesk', sans-serif;
+    letter-spacing: .04em;
+  }
 
   /* ── layout ── */
-  main { padding: 2rem; max-width: 1400px; margin: 0 auto; }
-  .section-title {
-    font-size: .7rem; font-weight: 700; letter-spacing: .12em;
-    color: var(--gold); text-transform: uppercase; margin-bottom: 1rem;
-    display: flex; align-items: center; gap: .5rem;
-  }
-  .section-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  main { position: relative; z-index: 1; padding: 2rem 2.5rem; max-width: 1440px; margin: 0 auto; }
 
-  /* ── KPI cards ── */
-  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-  .kpi-card {
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 12px; padding: 1.25rem 1.5rem;
-    transition: border-color .2s;
+  .section-label {
+    font-family: 'Orbitron', sans-serif;
+    font-size: .6rem; font-weight: 700;
+    letter-spacing: .25em; color: var(--neon);
+    text-transform: uppercase; margin-bottom: 1rem;
+    display: flex; align-items: center; gap: .75rem;
+    opacity: .7;
   }
-  .kpi-card:hover { border-color: var(--gold); }
-  .kpi-card.gold  { border-color: var(--gold); background: #1a1500; }
-  .kpi-label { font-size: .7rem; color: var(--txt2); text-transform: uppercase; letter-spacing: .08em; margin-bottom: .5rem; }
-  .kpi-value { font-size: 2.4rem; font-weight: 800; line-height: 1; }
-  .kpi-value.gold  { color: var(--gold); }
-  .kpi-value.red   { color: var(--red);  }
-  .kpi-value.green { color: var(--green);}
-  .kpi-value.blue  { color: var(--blue); }
-  .kpi-sub { font-size: .72rem; color: var(--txt2); margin-top: .4rem; }
+  .section-label::before { content: '//'; opacity: .5; }
+  .section-label::after  { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, var(--border) 0%, transparent 100%); }
+
+  /* ── KPI grid ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 1rem; margin-bottom: 2rem;
+  }
+  @media(max-width:1200px) { .kpi-grid { grid-template-columns: repeat(3,1fr); } }
+  @media(max-width:600px)  { .kpi-grid { grid-template-columns: repeat(2,1fr); } }
+
+  .kpi-card {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.4rem 1.2rem;
+    backdrop-filter: blur(12px);
+    transition: border-color .25s, box-shadow .25s, transform .2s;
+    cursor: default;
+    position: relative; overflow: hidden;
+  }
+  .kpi-card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--neon-glow), transparent);
+    opacity: 0; transition: opacity .3s;
+  }
+  .kpi-card:hover {
+    border-color: var(--border-h);
+    box-shadow: 0 0 30px var(--neon-dim), inset 0 0 20px rgba(0,212,255,0.03);
+    transform: translateY(-2px);
+  }
+  .kpi-card:hover::before { opacity: 1; }
+  .kpi-card.primary {
+    border-color: rgba(0,212,255,0.35);
+    background: rgba(0,212,255,0.05);
+    box-shadow: 0 0 25px rgba(0,212,255,0.1);
+  }
+
+  .kpi-icon {
+    font-size: 1.2rem; margin-bottom: .6rem; opacity: .6;
+    display: block;
+  }
+  .kpi-label {
+    font-size: .6rem; font-weight: 600;
+    color: var(--txt2); text-transform: uppercase;
+    letter-spacing: .12em; margin-bottom: .5rem;
+  }
+  .kpi-value {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 2.6rem; font-weight: 900; line-height: 1;
+    transition: text-shadow .3s;
+  }
+  .kpi-value.neon  { color: var(--neon);  text-shadow: 0 0 20px var(--neon-glow), 0 0 40px rgba(0,212,255,0.2); }
+  .kpi-value.red   { color: var(--red);   text-shadow: 0 0 20px var(--red-glow),  0 0 40px rgba(255,34,51,0.2); }
+  .kpi-value.green { color: var(--green); text-shadow: 0 0 20px rgba(0,255,136,.5); }
+  .kpi-value.white { color: var(--txt);   text-shadow: 0 0 15px rgba(255,255,255,.3); }
+  .kpi-sub { font-size: .65rem; color: var(--txt3); margin-top: .45rem; letter-spacing: .03em; }
 
   /* ── main grid ── */
-  .main-grid { display: grid; grid-template-columns: 1fr 1.6fr; gap: 1.5rem; margin-bottom: 1.5rem; }
-  @media(max-width: 900px) { .main-grid { grid-template-columns: 1fr; } }
+  .main-grid { display: grid; grid-template-columns: 1fr 1.65fr; gap: 1.25rem; margin-bottom: 1.25rem; }
+  @media(max-width:960px) { .main-grid { grid-template-columns: 1fr; } }
 
-  /* ── cards genéricas ── */
+  /* ── glass cards ── */
   .card {
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 12px; padding: 1.5rem; overflow: hidden;
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 1.5rem 1.75rem;
+    backdrop-filter: blur(12px);
+    overflow: hidden;
+    position: relative;
   }
+  .card::after {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent 0%, var(--neon-glow) 50%, transparent 100%);
+    opacity: .4;
+  }
+
   .card-title {
-    font-size: .75rem; font-weight: 700; color: var(--gold);
-    text-transform: uppercase; letter-spacing: .1em; margin-bottom: 1.25rem;
+    font-family: 'Orbitron', sans-serif;
+    font-size: .6rem; font-weight: 700;
+    color: var(--neon); text-transform: uppercase;
+    letter-spacing: .2em; margin-bottom: 1.25rem;
+    display: flex; align-items: center; gap: .5rem;
+    opacity: .85;
   }
+  .card-title::before { content: '›'; font-size: 1em; }
 
   /* ── chart ── */
   .chart-wrap { position: relative; height: 260px; }
 
-  /* ── tabla leads ── */
+  /* ── leads list ── */
   .leads-list { display: flex; flex-direction: column; gap: .5rem; max-height: 320px; overflow-y: auto; }
+
   .lead-row {
     display: grid; grid-template-columns: 1fr auto auto;
     align-items: center; gap: .75rem;
-    background: var(--card2); border-radius: 8px; padding: .6rem 1rem;
-    border-left: 3px solid var(--border);
-    transition: border-color .2s;
+    background: rgba(255,255,255,0.02);
+    border-radius: 10px; padding: .65rem 1rem;
+    border-left: 2px solid transparent;
+    transition: background .2s, border-color .2s, box-shadow .2s;
   }
-  .lead-row:hover { border-left-color: var(--gold); }
-  .lead-name  { font-size: .85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .lead-phone { font-size: .72rem; color: var(--txt2); }
-  .lead-score { font-size: .8rem; font-weight: 700; color: var(--gold-lt); }
+  .lead-row:hover {
+    background: var(--glass-h);
+    box-shadow: inset 0 0 20px rgba(0,212,255,0.04);
+  }
+  .lead-name  { font-size: .84rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lead-phone { font-size: .68rem; color: var(--txt2); margin-top: 2px; font-family: monospace; letter-spacing: .03em; }
+  .lead-score {
+    font-family: 'Orbitron', sans-serif;
+    font-size: .75rem; font-weight: 700;
+    color: var(--neon);
+    text-shadow: 0 0 8px var(--neon-glow);
+    white-space: nowrap;
+  }
+
   .estado-badge {
-    font-size: .65rem; font-weight: 700; padding: .2rem .6rem;
-    border-radius: 20px; white-space: nowrap; text-transform: uppercase; letter-spacing: .05em;
+    font-size: .58rem; font-weight: 700; padding: .22rem .65rem;
+    border-radius: 20px; white-space: nowrap;
+    text-transform: uppercase; letter-spacing: .07em;
+    font-family: 'Space Grotesk', sans-serif;
   }
 
   /* ── tabla mensajes ── */
-  .msg-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
-  .msg-table th {
-    text-align: left; padding: .6rem .75rem;
-    font-size: .65rem; font-weight: 700; color: var(--txt2);
-    text-transform: uppercase; letter-spacing: .08em;
-    border-bottom: 1px solid var(--border);
-  }
-  .msg-table td { padding: .65rem .75rem; border-bottom: 1px solid #1e1e1e; vertical-align: top; }
-  .msg-table tr:hover td { background: var(--card2); }
-  .msg-table tr:last-child td { border-bottom: none; }
-  .tag-user      { color: #3498db; font-weight: 600; }
-  .tag-assistant { color: var(--gold); font-weight: 600; }
-  .tag-alta   { color: #e74c3c; }
-  .tag-media  { color: #e67e22; }
-  .tag-baja   { color: #888;    }
-  .msg-text { color: var(--txt); line-height: 1.4; }
-  .msg-time { font-size: .65rem; color: var(--txt2); white-space: nowrap; }
-  .msg-wrap { max-height: 400px; overflow-y: auto; }
+  .msg-wrap { max-height: 420px; overflow-y: auto; }
 
-  /* ── scrollbar personalizado ── */
-  ::-webkit-scrollbar { width: 5px; height: 5px; }
-  ::-webkit-scrollbar-track { background: var(--bg); }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--gold); }
+  .msg-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+  .msg-table thead th {
+    text-align: left; padding: .65rem .9rem;
+    font-size: .58rem; font-weight: 700;
+    color: var(--txt2); text-transform: uppercase;
+    letter-spacing: .12em;
+    border-bottom: 1px solid var(--border);
+    font-family: 'Orbitron', sans-serif;
+    background: transparent;
+  }
+  .msg-table td {
+    padding: .7rem .9rem;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+  }
+  .msg-table tr:hover td { background: var(--glass-h); }
+  .msg-table tr:last-child td { border-bottom: none; }
+
+  .tag-user      { color: var(--neon);  font-weight: 700; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
+  .tag-assistant { color: var(--txt2);  font-weight: 600; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
+  .tag-alta   { color: var(--red);    font-weight: 700; font-size: .72rem; text-shadow: 0 0 8px var(--red-glow); }
+  .tag-media  { color: var(--orange); font-weight: 700; font-size: .72rem; }
+  .tag-baja   { color: var(--txt3);   font-size: .72rem; }
+  .msg-text   { color: rgba(255,255,255,.8); line-height: 1.45; max-width: 420px; }
+  .msg-time   { font-size: .62rem; color: var(--txt3); white-space: nowrap; font-family: monospace; letter-spacing: .04em; }
+
+  /* ── scrollbar ── */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.25); border-radius: 10px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--neon); box-shadow: 0 0 6px var(--neon); }
 
   /* ── animaciones ── */
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-  .fade-in { animation: fadeIn .4s ease; }
-  @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes blink { 0%,100%{opacity:1;box-shadow:0 0 6px var(--green)} 50%{opacity:.3;box-shadow:none} }
+  @keyframes fadeUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes scanline {
+    0%   { transform: translateY(-100%); }
+    100% { transform: translateY(100vh); }
+  }
+  .fade-in { animation: fadeUp .35s ease forwards; }
 
   /* ── empty state ── */
-  .empty { text-align: center; padding: 2.5rem; color: var(--txt2); font-size: .85rem; }
+  .empty {
+    text-align: center; padding: 3rem 1rem;
+    color: var(--txt3); font-size: .8rem;
+    letter-spacing: .05em;
+  }
+  .empty::before { content: '— '; }
+  .empty::after  { content: ' —'; }
+
+  /* ── scan line decorativa en header ── */
+  .scan-line {
+    position: absolute; bottom: -1px; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent 0%, var(--neon) 50%, transparent 100%);
+    opacity: .6;
+  }
 </style>
 </head>
 <body>
 
-<header>
+<header style="position:relative">
   <div class="logo">
-    <div class="logo-dot"></div>
-    <div>
-      <div class="logo-name">CONEXION SIN LIMITES</div>
-      <div class="logo-sub">Valentina CRM — Panel de Control</div>
+    <div class="logo-icon">V</div>
+    <div class="logo-text-wrap">
+      <div class="logo-name">
+        CONE<span class="logo-x">X</span>I&Oacute;N SIN L&Iacute;MITES
+      </div>
+      <div class="logo-sub">Valentina &nbsp;·&nbsp; CRM Intelligence</div>
     </div>
   </div>
   <div class="header-right">
-    <div class="live-badge"><div class="live-dot"></div> EN VIVO</div>
-    <div id="last-update">Actualizando...</div>
+    <div class="live-badge"><div class="live-dot"></div>EN VIVO</div>
+    <div id="last-update">Iniciando...</div>
   </div>
+  <div class="scan-line"></div>
 </header>
 
 <main>
 
   <!-- KPIs -->
-  <div class="section-title">Resumen general</div>
+  <div class="section-label" style="margin-top:1.5rem">Resumen del sistema</div>
   <div class="kpi-grid">
-    <div class="kpi-card gold">
+    <div class="kpi-card primary">
+      <span class="kpi-icon">◈</span>
       <div class="kpi-label">Total Leads</div>
-      <div class="kpi-value gold" id="k-total">—</div>
-      <div class="kpi-sub">contactos registrados</div>
+      <div class="kpi-value neon" id="k-total">—</div>
+      <div class="kpi-sub">registros activos</div>
     </div>
     <div class="kpi-card">
+      <span class="kpi-icon">◉</span>
       <div class="kpi-label">Leads Calientes</div>
       <div class="kpi-value red" id="k-hot">—</div>
       <div class="kpi-sub">caliente + listo cierre</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Leads Cerrados</div>
+      <span class="kpi-icon">✓</span>
+      <div class="kpi-label">Conversiones</div>
       <div class="kpi-value green" id="k-closed">—</div>
-      <div class="kpi-sub">conversiones</div>
+      <div class="kpi-sub">leads cerrados</div>
     </div>
     <div class="kpi-card">
+      <span class="kpi-icon">◎</span>
       <div class="kpi-label">Score Promedio</div>
-      <div class="kpi-value blue" id="k-score">—</div>
-      <div class="kpi-sub">sobre 100 puntos</div>
+      <div class="kpi-value white" id="k-score">—</div>
+      <div class="kpi-sub">sobre 100 pts</div>
     </div>
     <div class="kpi-card">
+      <span class="kpi-icon">▲</span>
       <div class="kpi-label">Mensajes Hoy</div>
-      <div class="kpi-value" id="k-msgs">—</div>
+      <div class="kpi-value white" id="k-msgs">—</div>
       <div class="kpi-sub">en historial CRM</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Follow-ups Pendientes</div>
-      <div class="kpi-value" id="k-followups">—</div>
-      <div class="kpi-sub">programados sin enviar</div>
+      <span class="kpi-icon">◷</span>
+      <div class="kpi-label">Follow-ups</div>
+      <div class="kpi-value neon" id="k-followups">—</div>
+      <div class="kpi-sub">pendientes de envío</div>
     </div>
   </div>
 
   <!-- Chart + Leads recientes -->
+  <div class="section-label">Análisis de pipeline</div>
   <div class="main-grid">
 
     <div class="card">
@@ -364,15 +563,16 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <div class="card">
       <div class="card-title">Leads recientes</div>
       <div class="leads-list" id="leads-list">
-        <div class="empty">Cargando leads...</div>
+        <div class="empty">Sin datos</div>
       </div>
     </div>
 
   </div>
 
   <!-- Mensajes recientes -->
-  <div class="card">
-    <div class="card-title">Historial de mensajes recientes</div>
+  <div class="section-label">Historial de conversaciones</div>
+  <div class="card" style="margin-bottom:2.5rem">
+    <div class="card-title">Mensajes recientes</div>
     <div class="msg-wrap">
       <table class="msg-table">
         <thead>
@@ -381,12 +581,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
             <th>Rol</th>
             <th>Mensaje</th>
             <th>Estado</th>
-            <th>Intención</th>
+            <th>Intenci&oacute;n</th>
             <th>Hora</th>
           </tr>
         </thead>
         <tbody id="msgs-body">
-          <tr><td colspan="6" class="empty">Cargando mensajes...</td></tr>
+          <tr><td colspan="6" class="empty">Sin datos</td></tr>
         </tbody>
       </table>
     </div>
@@ -395,7 +595,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 </main>
 
 <script>
-// ── Chart.js instance ──────────────────────────────────────────────────────────
+// ── Chart instance ─────────────────────────────────────────────────────────────
 let chartEstados = null;
 
 function initChart(labels, data, colors) {
@@ -407,10 +607,11 @@ function initChart(labels, data, colors) {
       labels,
       datasets: [{
         data,
-        backgroundColor: colors.map(c => c + 'cc'),
+        backgroundColor: colors.map(c => c + '33'),
         borderColor:     colors,
         borderWidth: 1,
         borderRadius: 6,
+        hoverBackgroundColor: colors.map(c => c + '66'),
       }]
     },
     options: {
@@ -419,21 +620,26 @@ function initChart(labels, data, colors) {
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: '#1c1c1c',
-          borderColor: '#c9a227',
+          backgroundColor: 'rgba(0,0,0,0.9)',
+          borderColor: '#00D4FF',
           borderWidth: 1,
-          titleColor: '#c9a227',
-          bodyColor: '#f0f0f0',
+          titleColor: '#00D4FF',
+          bodyColor: '#ffffff',
+          titleFont: { family: 'Orbitron', size: 11 },
+          bodyFont:  { family: 'Space Grotesk', size: 12 },
+          padding: 12,
         }
       },
       scales: {
         x: {
-          ticks: { color: '#888', font: { size: 11 } },
-          grid:  { color: '#1e1e1e' }
+          ticks: { color: 'rgba(255,255,255,0.4)', font: { family: 'Space Grotesk', size: 10 } },
+          grid:  { color: 'rgba(255,255,255,0.04)' },
+          border:{ color: 'rgba(0,212,255,0.15)' }
         },
         y: {
-          ticks: { color: '#888', font: { size: 11 }, stepSize: 1 },
-          grid:  { color: '#1e1e1e' },
+          ticks: { color: 'rgba(255,255,255,0.4)', font: { size: 10 }, stepSize: 1 },
+          grid:  { color: 'rgba(255,255,255,0.04)' },
+          border:{ color: 'rgba(0,212,255,0.15)' },
           beginAtZero: true
         }
       }
@@ -441,42 +647,39 @@ function initChart(labels, data, colors) {
   });
 }
 
-// ── Estado badge HTML ──────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
 function estadoBadge(estado, color) {
-  return `<span class="estado-badge" style="background:${color}22;color:${color};border:1px solid ${color}44">${estado}</span>`;
+  return `<span class="estado-badge" style="background:${color}1a;color:${color};border:1px solid ${color}55;box-shadow:0 0 6px ${color}33">${estado}</span>`;
 }
 
-// ── Intención badge ────────────────────────────────────────────────────────────
-function intencionTag(int) {
-  const cls = int === 'alta' ? 'tag-alta' : int === 'media' ? 'tag-media' : 'tag-baja';
-  return `<span class="${cls}">${int}</span>`;
+function intencionTag(v) {
+  const cls = v==='alta' ? 'tag-alta' : v==='media' ? 'tag-media' : 'tag-baja';
+  return `<span class="${cls}">${v}</span>`;
 }
 
-// ── Formatear hora ─────────────────────────────────────────────────────────────
 function fmtTime(ts) {
   if (!ts) return '—';
-  const d = new Date(ts.replace(' ', 'T'));
-  if (isNaN(d)) return ts.slice(10, 16) || ts;
-  return d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+  const d = new Date(ts.replace(' ','T'));
+  if (isNaN(d)) return ts.slice(10,16) || ts;
+  return d.toLocaleTimeString('es-CL', { hour:'2-digit', minute:'2-digit' });
 }
 
-// ── Actualizar KPIs ────────────────────────────────────────────────────────────
+// ── Actualizar stats ───────────────────────────────────────────────────────────
 async function actualizarStats() {
   const r = await fetch('/api/stats');
   const d = await r.json();
-
   document.getElementById('k-total').textContent     = d.total_leads;
   document.getElementById('k-hot').textContent       = d.leads_calientes;
   document.getElementById('k-closed').textContent    = d.leads_cerrados;
   document.getElementById('k-score').textContent     = d.score_promedio;
   document.getElementById('k-msgs').textContent      = d.mensajes_hoy;
   document.getElementById('k-followups').textContent = d.followups_pendientes;
-  document.getElementById('last-update').textContent = 'Actualizado ' + d.actualizado;
-
-  const labels = d.por_estado.map(e => e.estado);
-  const data   = d.por_estado.map(e => e.total);
-  const colors = d.por_estado.map(e => e.color);
-  initChart(labels, data, colors);
+  document.getElementById('last-update').textContent = d.actualizado;
+  initChart(
+    d.por_estado.map(e => e.estado),
+    d.por_estado.map(e => e.total),
+    d.por_estado.map(e => e.color)
+  );
 }
 
 // ── Actualizar leads ───────────────────────────────────────────────────────────
@@ -484,20 +687,15 @@ async function actualizarLeads() {
   const r = await fetch('/api/leads');
   const d = await r.json();
   const el = document.getElementById('leads-list');
-
-  if (!d.leads.length) {
-    el.innerHTML = '<div class="empty">No hay leads registrados aún</div>';
-    return;
-  }
-
+  if (!d.leads.length) { el.innerHTML = '<div class="empty">Sin leads registrados</div>'; return; }
   el.innerHTML = d.leads.map(l => `
-    <div class="lead-row fade-in" style="border-left-color:${l.color}">
-      <div>
+    <div class="lead-row fade-in" style="border-left-color:${l.color};box-shadow:inset 2px 0 8px ${l.color}22">
+      <div style="min-width:0">
         <div class="lead-name">${l.nombre}</div>
-        <div class="lead-phone">${l.telefono} &nbsp;·&nbsp; ${l.subproducto}</div>
+        <div class="lead-phone">${l.telefono} &middot; ${l.subproducto}</div>
       </div>
       ${estadoBadge(l.estado, l.color)}
-      <div class="lead-score">${l.score}pts</div>
+      <div class="lead-score">${l.score}<span style="font-size:.55rem;opacity:.6">pts</span></div>
     </div>
   `).join('');
 }
@@ -507,39 +705,30 @@ async function actualizarMensajes() {
   const r = await fetch('/api/messages');
   const d = await r.json();
   const el = document.getElementById('msgs-body');
-
-  if (!d.mensajes.length) {
-    el.innerHTML = '<tr><td colspan="6" class="empty">No hay mensajes registrados aún</td></tr>';
-    return;
-  }
-
+  if (!d.mensajes.length) { el.innerHTML = '<tr><td colspan="6" class="empty">Sin mensajes</td></tr>'; return; }
   el.innerHTML = d.mensajes.map(m => `
     <tr class="fade-in">
-      <td><span style="font-size:.8rem;font-weight:600">${m.nombre}</span></td>
-      <td><span class="${m.rol === 'user' ? 'tag-user' : 'tag-assistant'}">${m.rol}</span></td>
+      <td style="font-weight:600;font-size:.8rem">${m.nombre}</td>
+      <td><span class="${m.rol==='user'?'tag-user':'tag-assistant'}">${m.rol}</span></td>
       <td class="msg-text">${m.mensaje}</td>
-      <td>${m.estado !== '—' ? estadoBadge(m.estado, '#888') : '<span style="color:#444">—</span>'}</td>
-      <td>${m.intencion !== '—' ? intencionTag(m.intencion) : '<span style="color:#444">—</span>'}</td>
+      <td>${m.estado!=='—' ? estadoBadge(m.estado,'#00D4FF') : '<span style="color:rgba(255,255,255,.15)">—</span>'}</td>
+      <td>${m.intencion!=='—' ? intencionTag(m.intencion) : '<span style="color:rgba(255,255,255,.15)">—</span>'}</td>
       <td class="msg-time">${fmtTime(m.timestamp)}</td>
     </tr>
   `).join('');
 }
 
-// ── Loop principal ─────────────────────────────────────────────────────────────
+// ── Loop ───────────────────────────────────────────────────────────────────────
 async function refresh() {
   try {
-    await Promise.all([
-      actualizarStats(),
-      actualizarLeads(),
-      actualizarMensajes(),
-    ]);
-  } catch (e) {
-    document.getElementById('last-update').textContent = 'Error de conexion';
+    await Promise.all([actualizarStats(), actualizarLeads(), actualizarMensajes()]);
+  } catch(e) {
+    document.getElementById('last-update').textContent = 'ERROR';
   }
 }
 
 refresh();
-setInterval(refresh, 10_000); // refresca cada 10 segundos
+setInterval(refresh, 10_000);
 </script>
 </body>
 </html>

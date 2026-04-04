@@ -23,6 +23,7 @@ from agent.config import PORT, ENVIRONMENT
 import agent.crm as crm
 from agent.scheduler import iniciar_scheduler
 from agent.dashboard import router as dashboard_router
+from agent.make_integration import enviar_a_make
 
 # Número del supervisor comercial que recibe alertas
 TELEFONO_SUPERVISOR = "56978016298"
@@ -183,6 +184,17 @@ async def webhook_handler(request: Request):
             lead_ref = await crm.obtener_lead(msg.telefono)
             if lead_ref and crm.detectar_estancamiento(lead_ref["mensajes_en_estado"], estado_actual):
                 _log("INFO", f"Estancamiento detectado — {msg.telefono} lleva {lead_ref['mensajes_en_estado']} mensajes en '{estado_actual}'")
+
+            # --- Make.com: notificar lead actualizado ---
+            await enviar_a_make(
+                telefono=msg.telefono,
+                nombre=lead_ref.get("nombre", "") if lead_ref else "",
+                estado=estado_actual,
+                score=lead_ref.get("score", 0) if lead_ref else 0,
+                producto=lead_ref.get("subproducto", "") if lead_ref else "",
+                ultimo_mensaje=msg.texto,
+                intencion=intencion,
+            )
 
             historial = await obtener_historial(msg.telefono)
             _log("INFO", f"Historial recuperado: {len(historial)} mensajes previos")

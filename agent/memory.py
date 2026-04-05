@@ -6,6 +6,7 @@ Sistema de memoria del agente. Guarda el historial de conversaciones
 por número de teléfono usando aiosqlite directamente (compatible con Python 3.14+).
 """
 
+import os
 import aiosqlite
 from datetime import datetime
 from agent.config import DB_PATH
@@ -13,6 +14,7 @@ from agent.config import DB_PATH
 
 async def inicializar_db():
     """Crea las tablas si no existen."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS mensajes (

@@ -4,6 +4,7 @@ Conexión Sin Límites
 Módulo completo de leads, scoring y estados
 """
 
+import os
 import re
 import sqlite3
 import aiosqlite
@@ -11,7 +12,8 @@ import asyncio
 from datetime import datetime, timedelta
 import json
 
-DB_PATH = "valentina_crm.db"
+# Ruta de la DB — configurable via env para Railway Volume (/app/data persiste entre deploys)
+DB_PATH = os.getenv("DB_PATH", "/app/data/valentina_crm.db")
 
 # ═══════════════════════════════════════
 # ESQUEMA DE BASE DE DATOS
@@ -119,6 +121,7 @@ LIMITE_MENSAJES_POR_ESTADO = {
 
 async def init_db():
     """Inicializar la base de datos y aplicar migraciones incrementales."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
         await db.commit()

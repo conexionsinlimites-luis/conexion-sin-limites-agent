@@ -99,11 +99,11 @@ DATABASE_URL = _get(
     "DATABASE_URL",
     "URL_BASE_DE_DATOS",
     "URL_DE_BASE_DE_DATOS",
-    default="sqlite+aiosqlite:///./agentkit.db",
+    default="sqlite+aiosqlite:////app/data/agentkit.db",
 )
 
 DB_PATH = _get(
     "DB_PATH",
     "RUTA_BASE_DE_DATOS",
-    default="agentkit.db",
+    default="/app/data/agentkit.db",
 )

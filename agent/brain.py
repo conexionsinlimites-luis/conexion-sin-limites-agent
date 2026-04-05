@@ -45,13 +45,14 @@ def obtener_mensaje_fallback() -> str:
     return config.get("fallback_message", "Disculpa, no entendí tu mensaje. ¿Podrías reformularlo?")
 
 
-async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
+async def generar_respuesta(mensaje: str, historial: list[dict], nombre_cliente: str = None) -> str:
     """
     Genera una respuesta usando Claude API.
 
     Args:
         mensaje: El mensaje nuevo del usuario
         historial: Lista de mensajes anteriores [{"role": "user/assistant", "content": "..."}]
+        nombre_cliente: Nombre del cliente si ya fue capturado (None = aún desconocido)
 
     Returns:
         La respuesta generada por Claude
@@ -61,6 +62,41 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         return obtener_mensaje_fallback()
 
     system_prompt = cargar_system_prompt()
+
+    # Inyectar contexto del nombre para que Valentina lo use o lo pida
+    INVALIDOS = {"", "desconocido", "none", "null", "cliente", "unknown"}
+    nombre_valido = nombre_cliente and nombre_cliente.strip().lower() not in INVALIDOS
+    if nombre_valido:
+        system_prompt += (
+            f"\n\n─────────────────────────────────────────────\n"
+            f"CONTEXTO SESIÓN ACTUAL\n"
+            f"Nombre del cliente: {nombre_cliente}\n"
+            f"→ Úsalo naturalmente en la conversación cuando corresponda.\n"
+            f"→ NO vuelvas a preguntar el nombre.\n"
+            f"─────────────────────────────────────────────"
+        )
+    else:
+        num_mensajes = len(historial)
+        if num_mensajes >= 2:
+            system_prompt += (
+                "\n\n─────────────────────────────────────────────\n"
+                "CONTEXTO SESIÓN ACTUAL\n"
+                "Nombre del cliente: desconocido.\n"
+                "→ En el próximo mensaje natural, pide el nombre de forma cálida.\n"
+                "   Ejemplo: '¿Con quién tengo el gusto? 😊'\n"
+                "   o bien intégralo: 'Por cierto, ¿cómo te llamas?'\n"
+                "→ Solo pregúntalo UNA vez. Si ya lo preguntaste antes, no insistas.\n"
+                "─────────────────────────────────────────────"
+            )
+        else:
+            system_prompt += (
+                "\n\n─────────────────────────────────────────────\n"
+                "CONTEXTO SESIÓN ACTUAL\n"
+                "Nombre del cliente: desconocido.\n"
+                "→ Es el primer mensaje — NO preguntes el nombre todavía.\n"
+                "   Primero responde y genera confianza.\n"
+                "─────────────────────────────────────────────"
+            )
 
     # Construir mensajes para la API
     mensajes = []

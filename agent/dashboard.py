@@ -18,6 +18,18 @@ from agent.crm import DB_PATH
 
 router = APIRouter()
 
+# ── Prioridad visual por estado y score ───────────────────────────────────────
+def calcular_prioridad(estado: str, score: int) -> str:
+    """🔴 caliente  🟡 tibio  ⚪ frío  🟣 modo_humano — basado en estado y score."""
+    if estado == "modo_humano":
+        return "🟣"
+    if estado in ("caliente", "listo_para_cierre", "direccion_obtenida") or score >= 70:
+        return "🔴"
+    if estado in ("tibio", "interesado") or score >= 40:
+        return "🟡"
+    return "⚪"
+
+
 # ── Colores por estado (para el frontend) ─────────────────────────────────────
 COLOR_ESTADO = {
     "nuevo":               "#555555",
@@ -29,6 +41,7 @@ COLOR_ESTADO = {
     "listo_para_cierre":   "#c9a227",
     "cerrado":             "#2ecc71",
     "seguimiento":         "#7f8c8d",
+    "modo_humano":         "#a855f7",
 }
 
 # ── API: estadísticas ──────────────────────────────────────────────────────────
@@ -76,6 +89,63 @@ async def api_stats():
         ) as c:
             mensajes_hoy = (await c.fetchone())[0]
 
+        # ── Tasas de conversión por etapa del embudo ───────────────────────────
+        # Leads en modo_humano se excluyen: no aportan señal de conversión propia.
+        async with db.execute("""
+            SELECT
+              COUNT(CASE WHEN estado IN (
+                'contactado','interesado','tibio','caliente',
+                'direccion_obtenida','listo_para_cierre','cerrado'
+              ) THEN 1 END) AS n_contactado,
+
+              COUNT(CASE WHEN estado IN (
+                'interesado','tibio','caliente',
+                'direccion_obtenida','listo_para_cierre','cerrado'
+              ) THEN 1 END) AS n_interesado,
+
+              COUNT(CASE WHEN estado IN (
+                'caliente','direccion_obtenida','listo_para_cierre','cerrado'
+              ) THEN 1 END) AS n_caliente,
+
+              COUNT(CASE WHEN estado IN (
+                'listo_para_cierre','cerrado'
+              ) THEN 1 END) AS n_cierre,
+
+              COUNT(CASE WHEN estado = 'cerrado' THEN 1 END) AS n_cerrado
+            FROM leads
+            WHERE estado != 'modo_humano'
+        """) as c:
+            r = await c.fetchone()
+            n_contactado = r[0] or 0
+            n_interesado = r[1] or 0
+            n_caliente   = r[2] or 0
+            n_cierre     = r[3] or 0
+            n_cerrado    = r[4] or 0
+
+        def tasa(num, den):
+            return round(num / den * 100, 1) if den else 0
+
+        conversion = {
+            "contactado_interesado": {
+                "label": "Contactado → Interesado",
+                "pct":   tasa(n_interesado, n_contactado),
+                "num":   n_interesado,
+                "den":   n_contactado,
+            },
+            "interesado_caliente": {
+                "label": "Interesado → Caliente",
+                "pct":   tasa(n_caliente, n_interesado),
+                "num":   n_caliente,
+                "den":   n_interesado,
+            },
+            "caliente_cierre": {
+                "label": "Caliente → Cierre",
+                "pct":   tasa(n_cierre, n_caliente),
+                "num":   n_cierre,
+                "den":   n_caliente,
+            },
+        }
+
     return JSONResponse({
         "total_leads":          total_leads,
         "leads_calientes":      leads_calientes,
@@ -84,6 +154,7 @@ async def api_stats():
         "por_estado":           por_estado,
         "followups_pendientes": followups_pendientes,
         "mensajes_hoy":         mensajes_hoy,
+        "conversion":           conversion,
         "actualizado":          datetime.now().strftime("%H:%M:%S"),
     })
 
@@ -96,7 +167,7 @@ async def api_leads():
         db.row_factory = aiosqlite.Row
         async with db.execute("""
             SELECT nombre, telefono, estado, score, subproducto,
-                   ultima_interaccion, objeciones
+                   ultima_interaccion, objeciones, lead_resumen
             FROM leads
             ORDER BY ultima_interaccion DESC
             LIMIT 20
@@ -111,10 +182,42 @@ async def api_leads():
                     "subproducto":        r["subproducto"] or "—",
                     "ultima_interaccion": r["ultima_interaccion"],
                     "color":              COLOR_ESTADO.get(r["estado"], "#888"),
+                    "prioridad":          calcular_prioridad(r["estado"], r["score"] or 0),
+                    "resumen":            r["lead_resumen"] or "",
                 }
                 for r in rows
             ]
     return JSONResponse({"leads": leads})
+
+
+# ── API: tomar / liberar lead (modo humano) ────────────────────────────────────
+
+@router.post("/api/leads/{telefono}/tomar")
+async def tomar_lead(telefono: str):
+    """Activa modo_humano: pausa las respuestas de Valentina y cancela follow-ups."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE leads SET estado = 'modo_humano', ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?",
+            (telefono,)
+        )
+        await db.execute(
+            "UPDATE followup_programado SET cancelado = 1 WHERE telefono = ? AND enviado = 0 AND cancelado = 0",
+            (telefono,)
+        )
+        await db.commit()
+    return JSONResponse({"ok": True, "telefono": telefono, "estado": "modo_humano"})
+
+
+@router.post("/api/leads/{telefono}/liberar")
+async def liberar_lead(telefono: str):
+    """Desactiva modo_humano: devuelve el lead a seguimiento para que Valentina retome."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE leads SET estado = 'seguimiento', ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?",
+            (telefono,)
+        )
+        await db.commit()
+    return JSONResponse({"ok": True, "telefono": telefono, "estado": "seguimiento"})
 
 
 # ── API: mensajes recientes ────────────────────────────────────────────────────
@@ -393,12 +496,44 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .leads-list { display: flex; flex-direction: column; gap: .5rem; max-height: 320px; overflow-y: auto; }
 
   .lead-row {
-    display: grid; grid-template-columns: 1fr auto auto;
+    display: grid; grid-template-columns: 1.4rem 1fr auto auto auto;
     align-items: center; gap: .75rem;
     background: rgba(255,255,255,0.02);
     border-radius: 10px; padding: .65rem 1rem;
     border-left: 2px solid transparent;
     transition: background .2s, border-color .2s, box-shadow .2s;
+  }
+  .lead-priority { font-size: 1rem; line-height: 1; flex-shrink: 0; }
+
+  .btn-tomar {
+    font-size: .58rem; font-weight: 700;
+    padding: .22rem .7rem; border-radius: 20px;
+    border: 1px solid rgba(0,212,255,0.35);
+    background: rgba(0,212,255,0.07);
+    color: var(--neon); cursor: pointer;
+    text-transform: uppercase; letter-spacing: .07em;
+    white-space: nowrap; font-family: 'Space Grotesk', sans-serif;
+    transition: background .2s, box-shadow .2s;
+  }
+  .btn-tomar:hover:not(:disabled) {
+    background: rgba(0,212,255,0.18);
+    box-shadow: 0 0 10px rgba(0,212,255,0.3);
+  }
+  .btn-tomar:disabled { opacity: .45; cursor: default; }
+
+  .btn-liberar {
+    font-size: .58rem; font-weight: 700;
+    padding: .22rem .7rem; border-radius: 20px;
+    border: 1px solid rgba(168,85,247,0.4);
+    background: rgba(168,85,247,0.1);
+    color: #c084fc; cursor: pointer;
+    text-transform: uppercase; letter-spacing: .07em;
+    white-space: nowrap; font-family: 'Space Grotesk', sans-serif;
+    transition: background .2s, box-shadow .2s;
+  }
+  .btn-liberar:hover {
+    background: rgba(168,85,247,0.2);
+    box-shadow: 0 0 10px rgba(168,85,247,0.3);
   }
   .lead-row:hover {
     background: var(--glass-h);
@@ -406,6 +541,11 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   }
   .lead-name  { font-size: .84rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lead-phone { font-size: .68rem; color: var(--txt2); margin-top: 2px; font-family: monospace; letter-spacing: .03em; }
+  .lead-resumen {
+    font-size: .62rem; color: var(--txt3); margin-top: 3px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 340px; letter-spacing: .01em; line-height: 1.4;
+  }
   .lead-score {
     font-family: 'Orbitron', sans-serif;
     font-size: .75rem; font-weight: 700;
@@ -474,6 +614,62 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .empty::before { content: ''; }
   .empty::after  { content: ''; }
 
+  /* ── embudo de conversión ── */
+  .funnel-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 1rem; margin-bottom: 2rem;
+  }
+  @media(max-width:720px) { .funnel-grid { grid-template-columns: 1fr; } }
+
+  .funnel-card {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 14px; padding: 1.4rem 1.5rem;
+    backdrop-filter: blur(12px);
+    position: relative; overflow: hidden;
+    transition: border-color .25s, box-shadow .25s;
+  }
+  .funnel-card:hover {
+    border-color: var(--border-h);
+    box-shadow: 0 0 24px var(--neon-dim);
+  }
+  .funnel-card::after {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--neon-glow), transparent);
+    opacity: .4;
+  }
+
+  .funnel-label {
+    font-size: .58rem; font-weight: 700;
+    color: var(--txt2); text-transform: uppercase;
+    letter-spacing: .12em; margin-bottom: .6rem;
+  }
+  .funnel-arrow { color: var(--neon); margin: 0 .3em; opacity: .7; }
+
+  .funnel-pct {
+    font-family: 'Arial Black', sans-serif;
+    font-size: 2.8rem; font-weight: 900; line-height: 1;
+    letter-spacing: -.02em; margin-bottom: .6rem;
+  }
+
+  .funnel-bar-track {
+    height: 4px; border-radius: 4px;
+    background: rgba(255,255,255,0.06);
+    overflow: hidden; margin-bottom: .55rem;
+  }
+  .funnel-bar-fill {
+    height: 100%; border-radius: 4px;
+    transition: width 1s cubic-bezier(.4,0,.2,1);
+    width: 0%;
+  }
+
+  .funnel-counts {
+    font-size: .65rem; color: var(--txt3);
+    letter-spacing: .03em;
+  }
+  .funnel-counts strong { color: var(--txt2); }
+
   /* ── scan line decorativa en header ── */
   .scan-line {
     position: absolute; bottom: -1px; left: 0; right: 0;
@@ -539,8 +735,31 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Embudo de conversión -->
+  <div class="section-label">Embudo de conversi&oacute;n</div>
+  <div class="funnel-grid" id="funnel-grid">
+    <div class="funnel-card">
+      <div class="funnel-label">Contactado <span class="funnel-arrow">→</span> Interesado</div>
+      <div class="funnel-pct" id="f-pct-0" style="color:var(--neon)">—</div>
+      <div class="funnel-bar-track"><div class="funnel-bar-fill" id="f-bar-0" style="background:var(--neon)"></div></div>
+      <div class="funnel-counts" id="f-cnt-0">sin datos</div>
+    </div>
+    <div class="funnel-card">
+      <div class="funnel-label">Interesado <span class="funnel-arrow">→</span> Caliente</div>
+      <div class="funnel-pct" id="f-pct-1" style="color:var(--orange)">—</div>
+      <div class="funnel-bar-track"><div class="funnel-bar-fill" id="f-bar-1" style="background:var(--orange)"></div></div>
+      <div class="funnel-counts" id="f-cnt-1">sin datos</div>
+    </div>
+    <div class="funnel-card">
+      <div class="funnel-label">Caliente <span class="funnel-arrow">→</span> Cierre</div>
+      <div class="funnel-pct" id="f-pct-2" style="color:var(--green)">—</div>
+      <div class="funnel-bar-track"><div class="funnel-bar-fill" id="f-bar-2" style="background:var(--green)"></div></div>
+      <div class="funnel-counts" id="f-cnt-2">sin datos</div>
+    </div>
+  </div>
+
   <!-- Chart + Leads recientes -->
-  <div class="section-label">Análisis de pipeline</div>
+  <div class="section-label">An&aacute;lisis de pipeline</div>
   <div class="main-grid">
 
     <div class="card">
@@ -638,6 +857,32 @@ function initChart(labels, data, colors) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+function prioridadLabel(emoji) {
+  return { '🔴': 'Caliente', '🟡': 'Tibio', '⚪': 'Frío', '🟣': 'En atención humana' }[emoji] || '';
+}
+
+function botonAccion(lead) {
+  if (lead.estado === 'modo_humano') {
+    return `<button class="btn-liberar" onclick="liberarLead('${lead.telefono}')">Liberar IA</button>`;
+  }
+  return `<button class="btn-tomar" onclick="tomarLead('${lead.telefono}', this)">Tomar lead</button>`;
+}
+
+async function tomarLead(telefono, btn) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const r = await fetch('/api/leads/' + encodeURIComponent(telefono) + '/tomar', { method: 'POST' });
+    if (r.ok) await actualizarLeads();
+    else { btn.disabled = false; btn.textContent = 'Tomar lead'; }
+  } catch(e) { btn.disabled = false; btn.textContent = 'Tomar lead'; }
+}
+
+async function liberarLead(telefono) {
+  await fetch('/api/leads/' + encodeURIComponent(telefono) + '/liberar', { method: 'POST' });
+  await actualizarLeads();
+}
+
 function estadoBadge(estado, color) {
   return `<span class="estado-badge" style="background:${color}1a;color:${color};border:1px solid ${color}55;box-shadow:0 0 6px ${color}33">${estado}</span>`;
 }
@@ -670,6 +915,29 @@ async function actualizarStats() {
     d.por_estado.map(e => e.total),
     d.por_estado.map(e => e.color)
   );
+  renderEmbudo(d.conversion);
+}
+
+// ── Embudo de conversión ───────────────────────────────────────────────────────
+function renderEmbudo(conv) {
+  if (!conv) return;
+  const etapas = [
+    conv.contactado_interesado,
+    conv.interesado_caliente,
+    conv.caliente_cierre,
+  ];
+  etapas.forEach((e, i) => {
+    const pct = e.pct;
+    document.getElementById(`f-pct-${i}`).textContent = e.den > 0 ? pct + '%' : '—';
+    // Barra animada: pequeño delay para que la transición CSS sea visible
+    setTimeout(() => {
+      document.getElementById(`f-bar-${i}`).style.width = e.den > 0 ? pct + '%' : '0%';
+    }, 80 + i * 60);
+    document.getElementById(`f-cnt-${i}`).innerHTML =
+      e.den > 0
+        ? `<strong>${e.num}</strong> de ${e.den} leads`
+        : 'sin datos suficientes';
+  });
 }
 
 // ── Actualizar leads ───────────────────────────────────────────────────────────
@@ -680,12 +948,15 @@ async function actualizarLeads() {
   if (!d.leads.length) { el.innerHTML = '<div class="empty">Sin leads registrados</div>'; return; }
   el.innerHTML = d.leads.map(l => `
     <div class="lead-row fade-in" style="border-left-color:${l.color};box-shadow:inset 2px 0 8px ${l.color}22">
+      <div class="lead-priority" title="${prioridadLabel(l.prioridad)}">${l.prioridad}</div>
       <div style="min-width:0">
         <div class="lead-name">${l.nombre}</div>
         <div class="lead-phone">${l.telefono} &middot; ${l.subproducto}</div>
+        ${l.resumen ? `<div class="lead-resumen" title="${l.resumen}">${l.resumen}</div>` : ''}
       </div>
       ${estadoBadge(l.estado, l.color)}
       <div class="lead-score">${l.score}<span style="font-size:.55rem;opacity:.6">pts</span></div>
+      ${botonAccion(l)}
     </div>
   `).join('');
 }

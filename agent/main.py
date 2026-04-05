@@ -157,6 +157,21 @@ async def webhook_handler(request: Request):
         try:
             # --- CRM: Registrar lead si es nuevo ---
             await crm.crear_o_actualizar_lead(msg.telefono)
+
+            # --- MODO HUMANO: si un agente tomó el lead, Valentina no responde ---
+            lead_mode = await crm.obtener_lead(msg.telefono)
+            if lead_mode and lead_mode.get("estado") == "modo_humano":
+                await crm.guardar_mensaje(msg.telefono, "user", msg.texto, "modo_humano", None)
+                _log("INFO", f"Lead {msg.telefono} en modo_humano — IA silenciada, mensaje guardado")
+                continue
+
+            # --- NOMBRE: extraer del mensaje y guardar si aún no hay nombre válido ---
+            nombre_extraido = crm.extraer_nombre_de_mensaje(msg.texto)
+            if nombre_extraido:
+                actualizado = await crm.actualizar_nombre_si_desconocido(msg.telefono, nombre_extraido)
+                if actualizado:
+                    _log("INFO", f"Nombre capturado para {msg.telefono}: {nombre_extraido}")
+
             await crm.cancelar_followups(msg.telefono)
 
             # --- CRM: Detectar intención y objeción en el mensaje entrante ---
@@ -199,7 +214,8 @@ async def webhook_handler(request: Request):
             historial = await obtener_historial(msg.telefono)
             _log("INFO", f"Historial recuperado: {len(historial)} mensajes previos")
 
-            respuesta = await generar_respuesta(msg.texto, historial)
+            nombre_cliente = (lead_ref.get("nombre") or "") if lead_ref else ""
+            respuesta = await generar_respuesta(msg.texto, historial, nombre_cliente)
             _log("INFO", f"Respuesta generada: '{respuesta[:100]}'")
 
             # Detectar marcador de alerta al supervisor y procesarlo antes de enviar al cliente
@@ -210,6 +226,9 @@ async def webhook_handler(request: Request):
             await guardar_mensaje(msg.telefono, "assistant", respuesta_limpia)
             await crm.guardar_mensaje(msg.telefono, "user", msg.texto, estado_actual, intencion)
             await crm.guardar_mensaje(msg.telefono, "assistant", respuesta_limpia, estado_actual, None)
+
+            # Actualizar resumen del lead con la información más reciente
+            await crm.actualizar_resumen_lead(msg.telefono)
 
             enviado = await proveedor.enviar_mensaje(msg.telefono, respuesta_limpia)
             if enviado:
@@ -266,25 +285,54 @@ def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:
 
 
 async def _enviar_alerta_supervisor(datos: dict, telefono_cliente: str):
-    """Envía una alerta al supervisor comercial cuando Valentina captura una dirección o solicitud."""
-    nombre = datos.get("nombre", "Cliente")
-    tel    = datos.get("tel") or telefono_cliente
-    dir_   = datos.get("dir", "pendiente")
+    """
+    Envía alerta enriquecida al supervisor cuando Valentina captura una
+    dirección o detecta intención de contratar.
+    Combina los datos del marcador con la info actualizada del CRM.
+    """
+    tel  = (datos.get("tel") or telefono_cliente).replace("+", "").replace(" ", "").replace("-", "")
+    dir_ = datos.get("dir", "pendiente")
+
+    # Enriquecer con datos del CRM (nombre real, estado, score, resumen)
+    lead = await crm.obtener_lead(telefono_cliente)
+    if lead:
+        nombre   = lead.get("nombre") or datos.get("nombre") or "Cliente"
+        estado   = (lead.get("estado") or "—").upper()
+        score    = lead.get("score", 0)
+        producto = lead.get("subproducto") or "Telecom"
+        resumen  = lead.get("lead_resumen") or "—"
+    else:
+        nombre   = datos.get("nombre") or "Cliente"
+        estado   = "—"
+        score    = 0
+        producto = "Telecom"
+        resumen  = "—"
+
+    # Dirección desde el marcador; si el CRM ya la tiene, usar la más completa
+    if not dir_ or dir_ == "pendiente":
+        dir_ = lead.get("direccion") or "pendiente" if lead else "pendiente"
+
+    wa_link = f"https://wa.me/{tel}"
 
     mensaje = (
-        f"🔔 *ALERTA — Conexion Sin Limites*\n\n"
-        f"Valentina tiene un cliente listo para atención:\n\n"
-        f"👤 *Nombre:* {nombre}\n"
-        f"📱 *Teléfono:* +{tel}\n"
-        f"📍 *Dirección:* {dir_}\n\n"
-        f"Respóndele directamente a este número."
+        f"🔥 *LEAD LISTO — CONEXIÓN SIN LÍMITES*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 *{nombre}*\n"
+        f"📱 +{tel}\n"
+        f"📍 {dir_}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 {producto}\n"
+        f"⭐ {estado}  •  {score}/100 pts\n"
+        f"📋 _{resumen}_\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💬 Abrir chat: {wa_link}"
     )
 
     try:
         enviado = await proveedor.enviar_mensaje(TELEFONO_SUPERVISOR, mensaje)
         if enviado:
-            _log("INFO", f"Alerta supervisor enviada — cliente: {nombre} ({tel})")
+            _log("INFO", f"Alerta supervisor enviada — {nombre} ({tel})")
         else:
-            _log("ERROR", f"No se pudo enviar alerta al supervisor para cliente {tel}")
+            _log("ERROR", f"Alerta supervisor falló para {tel} — revisar credenciales")
     except Exception as e:
         _log("ERROR", f"Error enviando alerta supervisor: {e}")

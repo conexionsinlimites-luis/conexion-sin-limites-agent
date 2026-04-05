@@ -4,6 +4,7 @@ Conexión Sin Límites
 Módulo completo de leads, scoring y estados
 """
 
+import re
 import sqlite3
 import aiosqlite
 import asyncio
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS leads (
     agente TEXT DEFAULT 'valentina',
     objeciones TEXT DEFAULT '[]',
     mensajes_en_estado INTEGER DEFAULT 0,
+    lead_resumen TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -83,7 +85,8 @@ ESTADOS = [
     "direccion_obtenida",
     "listo_para_cierre",
     "cerrado",
-    "seguimiento"
+    "seguimiento",
+    "modo_humano",   # IA pausada — humano atiende directamente
 ]
 
 SCORE_POR_ESTADO = {
@@ -95,7 +98,8 @@ SCORE_POR_ESTADO = {
     "direccion_obtenida": 85,
     "listo_para_cierre": 95,
     "cerrado": 100,
-    "seguimiento": 25
+    "seguimiento": 25,
+    "modo_humano": 0,   # no altera score — se preserva el anterior
 }
 
 SCORE_POR_INTENCION = {
@@ -114,10 +118,19 @@ LIMITE_MENSAJES_POR_ESTADO = {
 # ═══════════════════════════════════════
 
 async def init_db():
-    """Inicializar la base de datos"""
+    """Inicializar la base de datos y aplicar migraciones incrementales."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
         await db.commit()
+        # Migraciones: agrega columnas nuevas sin romper DBs existentes
+        for ddl in [
+            "ALTER TABLE leads ADD COLUMN lead_resumen TEXT DEFAULT ''",
+        ]:
+            try:
+                await db.execute(ddl)
+                await db.commit()
+            except Exception:
+                pass  # columna ya existe
     print("CRM Valentina inicializado correctamente")
 
 # ═══════════════════════════════════════
@@ -296,6 +309,58 @@ def clasificar_lead(score: int) -> str:
     else:
         return "frio"
 
+def extraer_nombre_de_mensaje(mensaje: str) -> str | None:
+    """
+    Detecta si el cliente menciona su nombre en el mensaje.
+    Patrones: 'me llamo X', 'soy X', 'mi nombre es X', 'llámame X'.
+    Retorna el nombre en Title Case o None si no encuentra.
+    """
+    EXCLUIDAS = {
+        "bien", "mal", "aqui", "aquí", "solo", "sola", "yo", "tu", "él", "ella",
+        "un", "una", "el", "la", "de", "del", "por", "para", "con", "sin",
+        "cliente", "persona", "alguien", "nadie", "nuevo", "nueva",
+    }
+    patrones = [
+        r"me llamo\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)",
+        r"mi nombre es\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)",
+        r"soy\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)",
+        r"llámame\s+([a-záéíóúüñ]+)",
+        r"puedes llamarme\s+([a-záéíóúüñ]+)",
+        r"^([a-záéíóúüñ]{3,}(?:\s+[a-záéíóúüñ]{3,})?)\s*(?:aqui|aquí|presente|👋)?$",
+    ]
+    texto = mensaje.lower().strip()
+    for patron in patrones:
+        match = re.search(patron, texto, re.IGNORECASE)
+        if match:
+            nombre = match.group(1).strip().title()
+            if nombre.lower() not in EXCLUIDAS and len(nombre) >= 3:
+                return nombre
+    return None
+
+
+async def actualizar_nombre_si_desconocido(telefono: str, nombre: str) -> bool:
+    """
+    Guarda el nombre del cliente solo si el lead aún no tiene uno válido.
+    Nunca sobreescribe un nombre ya registrado. Retorna True si se actualizó.
+    """
+    INVALIDOS = {"", "desconocido", "none", "null", "cliente", "unknown"}
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT nombre FROM leads WHERE telefono = ?", (telefono,)
+        ) as c:
+            row = await c.fetchone()
+        if not row:
+            return False
+        nombre_actual = (row[0] or "").strip().lower()
+        if nombre_actual and nombre_actual not in INVALIDOS:
+            return False  # ya tiene nombre válido — no tocar
+        await db.execute(
+            "UPDATE leads SET nombre = ? WHERE telefono = ?", (nombre, telefono)
+        )
+        await db.commit()
+        return True
+
+
 def detectar_intencion(mensaje: str) -> str:
     """Detectar nivel de intención en mensaje"""
     mensaje_lower = mensaje.lower()
@@ -432,23 +497,34 @@ async def marcar_followup_enviado(followup_id: int):
 # ═══════════════════════════════════════
 
 async def generar_alerta_supervisor(telefono: str, tipo: str) -> str:
-    """Generar alerta formateada para el supervisor"""
+    """Genera y persiste en DB una alerta enriquecida para el supervisor."""
     lead = await obtener_lead(telefono)
     if not lead:
         return None
 
-    alerta = f"""🔥 LEAD {tipo.upper()} — CONEXIÓN SIN LÍMITES
-─────────────────────────────────────
-👤 Nombre: {lead.get('nombre', 'Desconocido')}
-📱 Teléfono: {telefono}
-📍 Dirección: {lead.get('direccion', 'No registrada')}
-📦 Producto: {lead.get('subproducto', 'Telecom general')}
-⭐ Estado: {lead.get('estado', 'nuevo').upper()}
-💯 Score: {lead.get('score', 0)}/100
-🔗 WhatsApp: https://wa.me/{telefono.replace('+', '').replace(' ', '')}
-─────────────────────────────────────"""
+    tel_limpio = telefono.replace("+", "").replace(" ", "").replace("-", "")
+    nombre   = lead.get("nombre") or "Desconocido"
+    estado   = (lead.get("estado") or "nuevo").upper()
+    score    = lead.get("score", 0)
+    producto = lead.get("subproducto") or "Telecom general"
+    dir_     = lead.get("direccion") or "No registrada"
+    resumen  = lead.get("lead_resumen") or "—"
+    wa_link  = f"https://wa.me/{tel_limpio}"
 
-    # Guardar alerta en DB
+    alerta = (
+        f"🔥 LEAD {tipo.upper()} — CONEXIÓN SIN LÍMITES\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 {nombre}\n"
+        f"📱 +{tel_limpio}\n"
+        f"📍 {dir_}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 {producto}\n"
+        f"⭐ {estado}  •  {score}/100 pts\n"
+        f"📋 {resumen}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💬 {wa_link}"
+    )
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO alertas (telefono, tipo, contenido)
@@ -457,6 +533,66 @@ async def generar_alerta_supervisor(telefono: str, tipo: str) -> str:
         await db.commit()
 
     return alerta
+
+# ═══════════════════════════════════════
+# RESUMEN AUTOMÁTICO DEL LEAD
+# ═══════════════════════════════════════
+
+async def generar_resumen_lead(telefono: str) -> str:
+    """
+    Construye un resumen corto del lead para lectura rápida del supervisor.
+    Usa solo datos estructurados ya capturados — sin llamadas externas.
+    Formato: qué necesita · estado/score · objeciones · último mensaje del cliente.
+    """
+    lead = await obtener_lead(telefono)
+    if not lead:
+        return ""
+
+    partes = []
+
+    # Qué necesita / producto de interés
+    subproducto = (lead.get("subproducto") or "").strip()
+    if subproducto and subproducto.lower() not in ("general", "telecom", ""):
+        partes.append(f"🎯 {subproducto}")
+    else:
+        partes.append("🎯 Producto sin definir")
+
+    # Estado y score
+    estado = lead.get("estado", "nuevo")
+    score  = lead.get("score", 0)
+    partes.append(f"{estado} · {score}pts")
+
+    # Objeciones detectadas
+    try:
+        objeciones = json.loads(lead.get("objeciones") or "[]")
+    except Exception:
+        objeciones = []
+    if objeciones:
+        partes.append(f"⚠️ {', '.join(objeciones)}")
+
+    # Último mensaje real del cliente (da contexto vivo a la conversación)
+    historial = await obtener_historial(telefono, limite=10)
+    msgs_cliente = [m["mensaje"] for m in historial if m.get("rol") == "user"]
+    if msgs_cliente:
+        ultimo = msgs_cliente[-1][:100].strip()
+        if ultimo:
+            partes.append(f'💬 "{ultimo}"')
+
+    return "  ·  ".join(partes)
+
+
+async def actualizar_resumen_lead(telefono: str) -> None:
+    """Regenera y guarda el resumen del lead en la tabla leads."""
+    resumen = await generar_resumen_lead(telefono)
+    if not resumen:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE leads SET lead_resumen = ? WHERE telefono = ?",
+            (resumen, telefono)
+        )
+        await db.commit()
+
 
 # ═══════════════════════════════════════
 # ESTADÍSTICAS Y REPORTES

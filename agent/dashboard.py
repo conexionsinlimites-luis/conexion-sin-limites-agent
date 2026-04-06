@@ -1689,7 +1689,7 @@ function intencionTag(v) {
   return `<span class="${cls}">${v}</span>`;
 }
 function prioridadLabel(emoji) {
-  return {'\uD83D\uDD34':'Caliente','\uD83D\uDFE1':'Tibio','\u26AA':'Fr\u00edo','\uD83D\uDFE3':'En atenci\u00f3n humana'}[emoji] || '';
+  return {'\\uD83D\\uDD34':'Caliente','\\uD83D\\uDFE1':'Tibio','\\u26AA':'Fr\\u00edo','\\uD83D\\uDFE3':'En atenci\\u00f3n humana'}[emoji] || '';
 }
 function botonAccion(lead) {
   if (lead.estado === 'modo_humano') return `<button class="btn-liberar" onclick="liberarLead('${lead.telefono}')">Liberar IA</button>`;

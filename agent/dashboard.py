@@ -9,14 +9,48 @@ Expone tres rutas:
   GET /api/messages      → últimos 30 mensajes del historial CRM
 """
 
+import asyncio
+import json
 import aiosqlite
 from datetime import datetime, date
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from agent.config import DB_PATH as MEMORY_DB_PATH
 from agent.crm import DB_PATH
+import agent.crm as _crm
+from agent.memory import guardar_mensaje as _guardar_memoria
 
 router = APIRouter()
+
+# ── SSE broadcast system ───────────────────────────────────────────────────────
+_sse_queues: set[asyncio.Queue] = set()
+
+
+async def broadcast_event(data: dict):
+    """Emite un evento SSE a todos los clientes conectados al Live Chat."""
+    if not _sse_queues:
+        return
+    payload = json.dumps(data, ensure_ascii=False)
+    muertos: set[asyncio.Queue] = set()
+    for q in _sse_queues:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            muertos.add(q)
+    _sse_queues -= muertos
+
+
+# ── Proveedor WhatsApp (lazy init para el dashboard) ─────────────────────────
+_proveedor_wa = None
+
+
+def _get_proveedor():
+    global _proveedor_wa
+    if _proveedor_wa is None:
+        from agent.providers import obtener_proveedor
+        _proveedor_wa = obtener_proveedor()
+    return _proveedor_wa
 
 # ── Prioridad visual por estado y score ───────────────────────────────────────
 def calcular_prioridad(estado: str, score: int) -> str:
@@ -205,6 +239,7 @@ async def tomar_lead(telefono: str):
             (telefono,)
         )
         await db.commit()
+    await broadcast_event({"type": "mode_change", "telefono": telefono, "modo_humano": True})
     return JSONResponse({"ok": True, "telefono": telefono, "estado": "modo_humano"})
 
 
@@ -217,7 +252,163 @@ async def liberar_lead(telefono: str):
             (telefono,)
         )
         await db.commit()
+    await broadcast_event({"type": "mode_change", "telefono": telefono, "modo_humano": False})
     return JSONResponse({"ok": True, "telefono": telefono, "estado": "seguimiento"})
+
+
+# ── API: SSE stream para Live Chat ────────────────────────────────────────────
+
+@router.get("/api/events")
+async def sse_events(request: Request):
+    """Server-Sent Events — notifica nuevos mensajes al Live Chat en tiempo real."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=50)
+    _sse_queues.add(q)
+
+    async def generar():
+        try:
+            yield 'data: {"type":"connected"}\n\n'
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(q.get(), timeout=25.0)
+                    yield f"data: {payload}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        finally:
+            _sse_queues.discard(q)
+
+    return StreamingResponse(
+        generar(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# ── API: lista de conversaciones (Live Chat) ───────────────────────────────────
+
+@router.get("/api/conversations")
+async def api_conversations():
+    """Lista de conversaciones ordenada por última actividad, máx. 50."""
+    # 1) leer contactos únicos desde la DB de memoria (agentkit.db)
+    async with aiosqlite.connect(MEMORY_DB_PATH) as mem_db:
+        mem_db.row_factory = aiosqlite.Row
+        async with mem_db.execute("""
+            SELECT
+                telefono,
+                MAX(timestamp)  AS ultima_actividad,
+                COUNT(*)        AS total_mensajes,
+                (SELECT content FROM mensajes m2
+                 WHERE m2.telefono = mensajes.telefono
+                 ORDER BY m2.timestamp DESC LIMIT 1) AS ultimo_mensaje,
+                (SELECT role FROM mensajes m2
+                 WHERE m2.telefono = mensajes.telefono
+                 ORDER BY m2.timestamp DESC LIMIT 1) AS ultimo_rol
+            FROM mensajes
+            GROUP BY telefono
+            ORDER BY ultima_actividad DESC
+            LIMIT 50
+        """) as c:
+            filas_mem = await c.fetchall()
+
+    if not filas_mem:
+        return JSONResponse({"conversaciones": []})
+
+    telefonos = [f["telefono"] for f in filas_mem]
+
+    # 2) enriquecer con datos del CRM (valentina_crm.db)
+    info_lead: dict[str, dict] = {}
+    async with aiosqlite.connect(DB_PATH) as crm_db:
+        crm_db.row_factory = aiosqlite.Row
+        ph = ",".join("?" * len(telefonos))
+        async with crm_db.execute(
+            f"SELECT telefono, nombre, estado, score FROM leads WHERE telefono IN ({ph})",
+            telefonos,
+        ) as c:
+            for row in await c.fetchall():
+                info_lead[row["telefono"]] = dict(row)
+
+    conversaciones = []
+    for f in filas_mem:
+        tel = f["telefono"]
+        lead = info_lead.get(tel, {})
+        estado = lead.get("estado") or "nuevo"
+        score = lead.get("score") or 0
+        conversaciones.append({
+            "telefono":         tel,
+            "nombre":           lead.get("nombre") or tel,
+            "estado":           estado,
+            "score":            score,
+            "ultima_actividad": f["ultima_actividad"],
+            "ultimo_mensaje":   f["ultimo_mensaje"] or "",
+            "ultimo_rol":       f["ultimo_rol"] or "user",
+            "total_mensajes":   f["total_mensajes"],
+            "modo_humano":      estado == "modo_humano",
+            "color":            COLOR_ESTADO.get(estado, "#888"),
+            "prioridad":        calcular_prioridad(estado, score),
+        })
+
+    return JSONResponse({"conversaciones": conversaciones})
+
+
+# ── API: historial de un contacto (Live Chat) ──────────────────────────────────
+
+@router.get("/api/conversations/{telefono}/messages")
+async def api_conversation_messages(telefono: str):
+    """Retorna el historial completo de mensajes de un contacto."""
+    async with aiosqlite.connect(MEMORY_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT role, content, timestamp FROM mensajes WHERE telefono = ? ORDER BY timestamp ASC",
+            (telefono,),
+        ) as c:
+            filas = await c.fetchall()
+
+    mensajes = [
+        {"role": f["role"], "content": f["content"], "timestamp": f["timestamp"]}
+        for f in filas
+    ]
+    return JSONResponse({"mensajes": mensajes, "telefono": telefono})
+
+
+# ── API: enviar mensaje desde el dashboard (Live Chat) ────────────────────────
+
+@router.post("/api/conversations/{telefono}/send")
+async def enviar_mensaje_dashboard(telefono: str, request: Request):
+    """Envía un mensaje al contacto vía WhatsApp y lo guarda en historial."""
+    try:
+        body = await request.json()
+        texto = (body.get("mensaje") or "").strip()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Body inválido"}, status_code=400)
+
+    if not texto:
+        return JSONResponse({"ok": False, "error": "Mensaje vacío"}, status_code=400)
+
+    # Enviar por WhatsApp
+    proveedor = _get_proveedor()
+    enviado = await proveedor.enviar_mensaje(telefono, texto)
+
+    ts = datetime.utcnow().isoformat()
+
+    # Guardar en memoria conversacional y en CRM
+    await _guardar_memoria(telefono, "assistant", texto)
+    await _crm.guardar_mensaje(telefono, "assistant", texto, "modo_humano", None)
+
+    # Notificar al Live Chat vía SSE
+    await broadcast_event({
+        "type":     "new_message",
+        "telefono": telefono,
+        "role":     "assistant",
+        "content":  texto[:300],
+        "ts":       ts,
+    })
+
+    return JSONResponse({"ok": enviado})
 
 
 # ── API: mensajes recientes ────────────────────────────────────────────────────
@@ -677,6 +868,155 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     background: linear-gradient(90deg, transparent 0%, var(--neon) 50%, transparent 100%);
     opacity: .6;
   }
+
+  /* ── Live Chat ─────────────────────────────────────────────────────────── */
+  .chat-container {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    height: 620px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+    background: var(--glass);
+    backdrop-filter: blur(12px);
+    margin-bottom: 2.5rem;
+    position: relative;
+  }
+  .chat-container::after {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent 0%, var(--neon-glow) 50%, transparent 100%);
+    opacity: .4; pointer-events: none;
+  }
+
+  .chat-sidebar {
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    background: rgba(0,0,0,0.2);
+  }
+  .chat-sidebar-header {
+    padding: .9rem 1.2rem;
+    border-bottom: 1px solid var(--border);
+    font-size: .6rem; font-weight: 700;
+    color: var(--neon); text-transform: uppercase; letter-spacing: .18em;
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: 'Orbitron', sans-serif;
+  }
+  .conv-list { flex: 1; overflow-y: auto; }
+
+  .conv-item {
+    padding: .75rem 1.1rem;
+    cursor: pointer;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    border-left: 3px solid transparent;
+    transition: background .15s, border-color .15s;
+  }
+  .conv-item:hover { background: var(--glass-h); }
+  .conv-item.active {
+    background: rgba(0,212,255,0.07);
+    border-left-color: var(--neon);
+  }
+  .conv-item-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .25rem; }
+  .conv-item-name { font-size: .82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+  .conv-item-time { font-size: .58rem; color: var(--txt3); font-family: monospace; flex-shrink: 0; }
+  .conv-item-bottom { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+  .conv-item-preview { font-size: .67rem; color: var(--txt3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+
+  .modo-badge {
+    font-size: .55rem; font-weight: 700;
+    padding: .15rem .5rem; border-radius: 20px;
+    text-transform: uppercase; letter-spacing: .07em; flex-shrink: 0;
+    font-family: 'Space Grotesk', sans-serif;
+  }
+  .modo-badge.humano { background: rgba(168,85,247,0.15); border: 1px solid rgba(168,85,247,0.4); color: #c084fc; }
+  .modo-badge.bot    { background: rgba(0,212,255,0.08);  border: 1px solid rgba(0,212,255,0.25); color: var(--neon); }
+
+  .chat-main { display: flex; flex-direction: column; min-width: 0; }
+
+  .chat-main-header {
+    padding: .85rem 1.4rem;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    min-height: 54px; gap: 1rem;
+    background: rgba(0,0,0,0.1);
+  }
+  .chat-contact-info { min-width: 0; }
+  .chat-contact-name { font-size: .9rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-contact-phone { font-size: .65rem; color: var(--txt2); font-family: monospace; margin-top: 2px; }
+  .chat-header-actions { display: flex; gap: .5rem; align-items: center; flex-shrink: 0; }
+
+  .chat-messages {
+    flex: 1; overflow-y: auto;
+    padding: 1.2rem 1.4rem;
+    display: flex; flex-direction: column; gap: .5rem;
+  }
+
+  .msg-bubble-wrap { display: flex; flex-direction: column; }
+  .msg-bubble-wrap.user     { align-items: flex-start; }
+  .msg-bubble-wrap.assistant { align-items: flex-end; }
+
+  .msg-bubble {
+    max-width: 72%; padding: .6rem .95rem;
+    border-radius: 12px; font-size: .83rem; line-height: 1.45;
+    word-break: break-word; white-space: pre-wrap;
+  }
+  .msg-bubble.user {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-bottom-left-radius: 4px;
+  }
+  .msg-bubble.assistant {
+    background: rgba(0,212,255,0.1);
+    border: 1px solid rgba(0,212,255,0.22);
+    border-bottom-right-radius: 4px;
+    color: var(--txt);
+  }
+  .msg-bubble-time {
+    font-size: .58rem; color: var(--txt3);
+    margin-top: .2rem; font-family: monospace;
+  }
+
+  .chat-input-row {
+    padding: .7rem 1rem;
+    border-top: 1px solid var(--border);
+    display: flex; gap: .6rem; align-items: flex-end;
+    background: rgba(0,0,0,0.15);
+  }
+  .chat-input {
+    flex: 1; background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border); border-radius: 8px;
+    color: var(--txt); padding: .55rem .9rem;
+    font-family: 'Space Grotesk', sans-serif; font-size: .83rem;
+    resize: none; outline: none; transition: border-color .2s;
+    min-height: 38px; max-height: 110px; overflow-y: auto;
+  }
+  .chat-input:focus { border-color: var(--neon); box-shadow: 0 0 8px var(--neon-dim); }
+  .chat-input:disabled { opacity: .35; }
+  .chat-send-btn {
+    background: rgba(0,212,255,0.1); border: 1px solid rgba(0,212,255,0.35);
+    color: var(--neon); padding: .52rem 1.1rem; border-radius: 8px;
+    font-family: 'Space Grotesk', sans-serif; font-size: .78rem; font-weight: 700;
+    cursor: pointer; transition: background .2s, box-shadow .2s; white-space: nowrap;
+  }
+  .chat-send-btn:hover:not(:disabled) {
+    background: rgba(0,212,255,0.2);
+    box-shadow: 0 0 12px rgba(0,212,255,0.3);
+  }
+  .chat-send-btn:disabled { opacity: .35; cursor: default; }
+
+  .conv-new-msg {
+    animation: convFlash .8s ease;
+  }
+  @keyframes convFlash {
+    0%   { background: rgba(0,212,255,0.18); }
+    100% { background: transparent; }
+  }
+
+  @media(max-width:860px) {
+    .chat-container { grid-template-columns: 1fr; height: auto; }
+    .chat-sidebar   { height: 220px; border-right: none; border-bottom: 1px solid var(--border); }
+    .chat-main      { height: 440px; }
+  }
 </style>
 </head>
 <body>
@@ -773,6 +1113,41 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       <div class="card-title">Leads recientes</div>
       <div class="leads-list" id="leads-list">
         <div class="empty">Sin datos</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Live Chat -->
+  <div class="section-label" style="margin-top:2rem">Live Chat &mdash; Tiempo Real</div>
+  <div class="chat-container">
+
+    <!-- Sidebar: lista de conversaciones -->
+    <div class="chat-sidebar">
+      <div class="chat-sidebar-header">
+        <span>Conversaciones</span>
+        <span id="conv-count" style="font-family:'Space Grotesk',sans-serif;color:var(--txt3);font-size:.65rem;font-weight:500;letter-spacing:.04em">—</span>
+      </div>
+      <div class="conv-list" id="conv-list">
+        <div class="empty" style="padding:2rem 1rem">Cargando...</div>
+      </div>
+    </div>
+
+    <!-- Panel derecho: vista de chat -->
+    <div class="chat-main">
+      <div class="chat-main-header">
+        <div class="chat-contact-info">
+          <div class="chat-contact-name" id="chat-contact-name">Selecciona una conversaci&oacute;n</div>
+          <div class="chat-contact-phone" id="chat-contact-phone"></div>
+        </div>
+        <div class="chat-header-actions" id="chat-header-actions"></div>
+      </div>
+      <div class="chat-messages" id="chat-messages">
+        <div class="empty" style="margin-top:5rem">Selecciona un contacto para ver la conversaci&oacute;n</div>
+      </div>
+      <div class="chat-input-row">
+        <textarea class="chat-input" id="chat-input" placeholder="Escribe un mensaje y presiona Enter..." rows="1" disabled></textarea>
+        <button class="chat-send-btn" id="chat-send-btn" onclick="enviarMensaje()" disabled>Enviar</button>
       </div>
     </div>
 
@@ -990,6 +1365,226 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 10_000);
+
+// ── Live Chat ──────────────────────────────────────────────────────────────────
+let contactoActivo = null;
+let conversaciones = [];
+
+// ── SSE connection ─────────────────────────────────────────────────────────────
+let _sse = null;
+function conectarSSE() {
+  if (_sse) { try { _sse.close(); } catch(_){} }
+  _sse = new EventSource('/api/events');
+  _sse.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.type === 'new_message') {
+        // Actualizar lista lateral
+        actualizarConversaciones();
+        // Si es el contacto activo, agregar burbuja
+        if (contactoActivo === d.telefono) {
+          agregarBurbuja(d.role, d.content, d.ts);
+          scrollAbajo();
+        } else {
+          flashConv(d.telefono);
+        }
+      } else if (d.type === 'mode_change') {
+        actualizarConversaciones();
+        if (contactoActivo === d.telefono) {
+          renderHeaderActions(d.telefono, d.modo_humano);
+        }
+      }
+    } catch(_) {}
+  };
+  _sse.onerror = () => { setTimeout(conectarSSE, 4000); };
+}
+
+// ── Conversaciones ─────────────────────────────────────────────────────────────
+async function actualizarConversaciones() {
+  try {
+    const r = await fetch('/api/conversations');
+    const d = await r.json();
+    conversaciones = d.conversaciones || [];
+    document.getElementById('conv-count').textContent = conversaciones.length;
+    renderConvList();
+  } catch(_) {}
+}
+
+function renderConvList() {
+  const el = document.getElementById('conv-list');
+  if (!conversaciones.length) {
+    el.innerHTML = '<div class="empty" style="padding:2rem 1rem">Sin conversaciones</div>';
+    return;
+  }
+  el.innerHTML = conversaciones.map(c => {
+    const activo = c.telefono === contactoActivo ? ' active' : '';
+    const badge = c.modo_humano
+      ? '<span class="modo-badge humano">Humano</span>'
+      : '<span class="modo-badge bot">Bot</span>';
+    const preview = c.ultimo_rol === 'assistant' ? '↩ ' : '';
+    const safeTel = c.telefono.replace(/['"<>&]/g, '');
+    return `
+    <div class="conv-item${activo}" id="conv-${safeTel}" onclick="seleccionarContacto('${safeTel}')">
+      <div class="conv-item-top">
+        <span class="conv-item-name" title="${esc(c.nombre)}">${esc(c.nombre)}</span>
+        <span class="conv-item-time">${fmtTime(c.ultima_actividad)}</span>
+      </div>
+      <div class="conv-item-bottom">
+        <span class="conv-item-preview">${preview}${esc((c.ultimo_mensaje||'').slice(0,55))}</span>
+        ${badge}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function flashConv(telefono) {
+  const el = document.getElementById('conv-' + telefono.replace(/['"<>&]/g, ''));
+  if (el) { el.classList.add('conv-new-msg'); setTimeout(() => el.classList.remove('conv-new-msg'), 900); }
+}
+
+// ── Seleccionar contacto ───────────────────────────────────────────────────────
+async function seleccionarContacto(telefono) {
+  contactoActivo = telefono;
+  renderConvList();
+
+  const conv = conversaciones.find(c => c.telefono === telefono);
+  const nombre = conv ? conv.nombre : telefono;
+
+  document.getElementById('chat-contact-name').textContent = nombre;
+  document.getElementById('chat-contact-phone').textContent = '+' + telefono;
+
+  renderHeaderActions(telefono, conv ? conv.modo_humano : false);
+
+  // Habilitar input
+  document.getElementById('chat-input').disabled = false;
+  document.getElementById('chat-send-btn').disabled = false;
+  document.getElementById('chat-input').focus();
+
+  await cargarMensajes(telefono);
+}
+
+function renderHeaderActions(telefono, modoHumano) {
+  const el = document.getElementById('chat-header-actions');
+  const safeTel = telefono.replace(/['"<>&]/g, '');
+  if (modoHumano) {
+    el.innerHTML = `
+      <span class="modo-badge humano" style="font-size:.65rem;padding:.25rem .8rem">Modo Humano</span>
+      <button class="btn-liberar" onclick="liberarLead('${safeTel}')">Liberar IA</button>`;
+  } else {
+    el.innerHTML = `
+      <span class="modo-badge bot" style="font-size:.65rem;padding:.25rem .8rem">Bot activo</span>
+      <button class="btn-tomar" onclick="tomarDesdeChat('${safeTel}', this)">Tomar lead</button>`;
+  }
+}
+
+async function tomarDesdeChat(telefono, btn) {
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    const r = await fetch('/api/leads/' + encodeURIComponent(telefono) + '/tomar', { method: 'POST' });
+    if (!r.ok) { btn.disabled = false; btn.textContent = 'Tomar lead'; }
+  } catch(_) { btn.disabled = false; btn.textContent = 'Tomar lead'; }
+}
+
+// ── Mensajes ───────────────────────────────────────────────────────────────────
+async function cargarMensajes(telefono) {
+  const el = document.getElementById('chat-messages');
+  el.innerHTML = '<div class="empty" style="margin-top:3rem">Cargando...</div>';
+  try {
+    const r = await fetch('/api/conversations/' + encodeURIComponent(telefono) + '/messages');
+    const d = await r.json();
+    if (!d.mensajes.length) {
+      el.innerHTML = '<div class="empty" style="margin-top:3rem">Sin mensajes</div>';
+      return;
+    }
+    el.innerHTML = d.mensajes.map(m => burbuja(m.role, m.content, m.timestamp)).join('');
+    scrollAbajo();
+  } catch(_) {
+    el.innerHTML = '<div class="empty" style="margin-top:3rem">Error al cargar</div>';
+  }
+}
+
+function burbuja(role, content, ts) {
+  return `
+  <div class="msg-bubble-wrap ${role}">
+    <div class="msg-bubble ${role}">${esc(content)}</div>
+    <div class="msg-bubble-time">${fmtTime(ts)}</div>
+  </div>`;
+}
+
+function agregarBurbuja(role, content, ts) {
+  const el = document.getElementById('chat-messages');
+  const empty = el.querySelector('.empty');
+  if (empty) empty.remove();
+  const div = document.createElement('div');
+  div.innerHTML = burbuja(role, content, ts);
+  el.appendChild(div.firstElementChild);
+}
+
+function scrollAbajo() {
+  const el = document.getElementById('chat-messages');
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Enviar mensaje ─────────────────────────────────────────────────────────────
+async function enviarMensaje() {
+  if (!contactoActivo) return;
+  const input = document.getElementById('chat-input');
+  const texto = input.value.trim();
+  if (!texto) return;
+
+  const btn = document.getElementById('chat-send-btn');
+  btn.disabled = true; input.disabled = true;
+
+  try {
+    const r = await fetch('/api/conversations/' + encodeURIComponent(contactoActivo) + '/send', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ mensaje: texto }),
+    });
+    if (r.ok) {
+      input.value = '';
+      input.style.height = 'auto';
+      // La burbuja llega vía SSE; si SSE no está disponible la mostramos local
+      agregarBurbuja('assistant', texto, new Date().toISOString());
+      scrollAbajo();
+    } else {
+      alert('Error al enviar el mensaje');
+    }
+  } catch(_) {
+    alert('Error de conexi\\u00f3n');
+  } finally {
+    btn.disabled = false; input.disabled = false; input.focus();
+  }
+}
+
+// ── Utilidades ─────────────────────────────────────────────────────────────────
+function esc(str) {
+  return String(str||'')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/\\n/g,'<br>');
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+(function initChat() {
+  // Enter envía, Shift+Enter hace salto de línea
+  const input = document.getElementById('chat-input');
+  if (input) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        enviarMensaje();
+      }
+    });
+    input.addEventListener('input', () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 110) + 'px';
+    });
+  }
+  conectarSSE();
+  actualizarConversaciones();
+  // Refrescar lista cada 30 s como fallback (SSE cubre el tiempo real)
+  setInterval(actualizarConversaciones, 30_000);
+})();
 </script>
 </body>
 </html>

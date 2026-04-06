@@ -22,7 +22,7 @@ from agent.transcriber import transcribir
 from agent.config import PORT, ENVIRONMENT
 import agent.crm as crm
 from agent.scheduler import iniciar_scheduler
-from agent.dashboard import router as dashboard_router
+from agent.dashboard import router as dashboard_router, broadcast_event
 from agent.make_integration import enviar_a_make
 
 # Número del supervisor comercial que recibe alertas
@@ -162,6 +162,12 @@ async def webhook_handler(request: Request):
             lead_mode = await crm.obtener_lead(msg.telefono)
             if lead_mode and lead_mode.get("estado") == "modo_humano":
                 await crm.guardar_mensaje(msg.telefono, "user", msg.texto, "modo_humano", None)
+                await guardar_mensaje(msg.telefono, "user", msg.texto)
+                await broadcast_event({
+                    "type": "new_message", "telefono": msg.telefono,
+                    "role": "user", "content": msg.texto[:300],
+                    "ts": datetime.utcnow().isoformat(),
+                })
                 _log("INFO", f"Lead {msg.telefono} en modo_humano — IA silenciada, mensaje guardado")
                 continue
 
@@ -226,6 +232,17 @@ async def webhook_handler(request: Request):
             await guardar_mensaje(msg.telefono, "assistant", respuesta_limpia)
             await crm.guardar_mensaje(msg.telefono, "user", msg.texto, estado_actual, intencion)
             await crm.guardar_mensaje(msg.telefono, "assistant", respuesta_limpia, estado_actual, None)
+
+            # Notificar al Live Chat en tiempo real vía SSE
+            ts_ahora = datetime.utcnow().isoformat()
+            await broadcast_event({
+                "type": "new_message", "telefono": msg.telefono,
+                "role": "user", "content": msg.texto[:300], "ts": ts_ahora,
+            })
+            await broadcast_event({
+                "type": "new_message", "telefono": msg.telefono,
+                "role": "assistant", "content": respuesta_limpia[:300], "ts": ts_ahora,
+            })
 
             # Actualizar resumen del lead con la información más reciente
             await crm.actualizar_resumen_lead(msg.telefono)

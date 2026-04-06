@@ -1244,19 +1244,19 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     -webkit-overflow-scrolling: touch;
   }
   #panel-chat {
-    height: calc(100vh - 70px); overflow: hidden;
-    display: none;
+    height: calc(100vh - 70px);
+    display: none; flex-direction: column;
   }
 
   /* ── WHATSAPP WEB LAYOUT ─────────────────────────────────────── */
-  .wa-layout { display: flex; height: 100%; overflow: hidden; }
+  .wa-layout { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 
   /* Sidebar */
   .wa-sidebar {
     width: 320px; flex-shrink: 0;
     display: flex; flex-direction: column;
     border-right: 1px solid var(--border);
-    background: rgba(0,0,0,.25); height: 100%; overflow: hidden;
+    background: rgba(0,0,0,.25); overflow: hidden;
   }
   .wa-sidebar-hdr {
     padding: .8rem 1.1rem; border-bottom: 1px solid var(--border);
@@ -1306,10 +1306,10 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .wa-conv-badges { display: flex; gap: .3rem; align-items: center; flex-shrink: 0; }
 
   /* Chat panel */
-  .wa-chat-panel { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+  .wa-chat-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
   .wa-empty { flex: 1; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.1); }
   .wa-empty-inner { text-align: center; }
-  .wa-active { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .wa-active { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
   /* Chat header */
   .wa-chat-hdr {
@@ -1329,11 +1329,15 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
   /* Messages */
   .wa-messages {
-    flex: 1; overflow-y: auto; min-height: 0;
+    flex: 1; overflow-y: scroll; min-height: 0;
     padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .38rem;
     -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
     background: radial-gradient(ellipse 80% 50% at 50% 100%, rgba(0,212,255,.03) 0%, transparent 70%), rgba(0,0,0,.1);
   }
+  .wa-messages::-webkit-scrollbar { width: 6px; }
+  .wa-messages::-webkit-scrollbar-track { background: #1a1a2e; }
+  .wa-messages::-webkit-scrollbar-thumb { background: #00d4ff; border-radius: 3px; }
+  .wa-messages { scrollbar-width: thin; scrollbar-color: #00d4ff #1a1a2e; }
 
   /* Bubbles */
   .wa-bubble-wrap { display: flex; flex-direction: column; max-width: 74%; }
@@ -1713,9 +1717,10 @@ function switchTab(tab) {
   const bc = document.getElementById('tab-chat');
   if (tab === 'metricas') {
     pm.style.display = ''; pc.style.display = 'none';
+    pc.style.flexDirection = '';
     bm.classList.add('active'); bc.classList.remove('active');
   } else {
-    pm.style.display = 'none'; pc.style.display = '';
+    pm.style.display = 'none'; pc.style.display = 'flex'; pc.style.flexDirection = 'column';
     bc.classList.add('active'); bm.classList.remove('active');
     actualizarConversaciones();
   }

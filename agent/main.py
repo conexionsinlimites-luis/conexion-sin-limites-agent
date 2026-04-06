@@ -165,7 +165,7 @@ async def webhook_handler(request: Request):
                 await guardar_mensaje(msg.telefono, "user", msg.texto)
                 await broadcast_event({
                     "type": "new_message", "telefono": msg.telefono,
-                    "role": "user", "content": msg.texto[:300],
+                    "role": "user", "content": msg.texto,
                     "ts": datetime.utcnow().isoformat(),
                 })
                 _log("INFO", f"Lead {msg.telefono} en modo_humano — IA silenciada, mensaje guardado")
@@ -237,11 +237,11 @@ async def webhook_handler(request: Request):
             ts_ahora = datetime.utcnow().isoformat()
             await broadcast_event({
                 "type": "new_message", "telefono": msg.telefono,
-                "role": "user", "content": msg.texto[:300], "ts": ts_ahora,
+                "role": "user", "content": msg.texto, "ts": ts_ahora,
             })
             await broadcast_event({
                 "type": "new_message", "telefono": msg.telefono,
-                "role": "assistant", "content": respuesta_limpia[:300], "ts": ts_ahora,
+                "role": "assistant", "content": respuesta_limpia, "ts": ts_ahora,
             })
 
             # Actualizar resumen del lead con la información más reciente

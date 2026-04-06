@@ -355,16 +355,17 @@ async def api_conversations():
     return JSONResponse({"conversaciones": conversaciones})
 
 
-# ── API: historial de un contacto (Live Chat) ──────────────────────────────────
+# ── API: historial de un contacto — /api/chat/{tel} ───────────────────────────
 
-@router.get("/api/conversations/{telefono}/messages")
-async def api_conversation_messages(telefono: str):
+@router.get("/api/chat/{telefono}")
+async def api_chat_historial(telefono: str):
     """Retorna el historial completo de mensajes de un contacto."""
+    tel = telefono.lstrip("+")          # normalizar: quitar + si viene en la URL
     async with aiosqlite.connect(MEMORY_DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT role, content, timestamp FROM mensajes WHERE telefono = ? ORDER BY timestamp ASC",
-            (telefono,),
+            (tel,),
         ) as c:
             filas = await c.fetchall()
 
@@ -372,14 +373,15 @@ async def api_conversation_messages(telefono: str):
         {"role": f["role"], "content": f["content"], "timestamp": f["timestamp"]}
         for f in filas
     ]
-    return JSONResponse({"mensajes": mensajes, "telefono": telefono})
+    return JSONResponse({"mensajes": mensajes, "telefono": tel})
 
 
-# ── API: enviar mensaje desde el dashboard (Live Chat) ────────────────────────
+# ── API: enviar mensaje desde el dashboard — /api/chat/{tel}/send ─────────────
 
-@router.post("/api/conversations/{telefono}/send")
+@router.post("/api/chat/{telefono}/send")
 async def enviar_mensaje_dashboard(telefono: str, request: Request):
     """Envía un mensaje al contacto vía WhatsApp y lo guarda en historial."""
+    tel = telefono.lstrip("+")
     try:
         body = await request.json()
         texto = (body.get("mensaje") or "").strip()
@@ -391,20 +393,20 @@ async def enviar_mensaje_dashboard(telefono: str, request: Request):
 
     # Enviar por WhatsApp
     proveedor = _get_proveedor()
-    enviado = await proveedor.enviar_mensaje(telefono, texto)
+    enviado = await proveedor.enviar_mensaje(tel, texto)
 
     ts = datetime.utcnow().isoformat()
 
     # Guardar en memoria conversacional y en CRM
-    await _guardar_memoria(telefono, "assistant", texto)
-    await _crm.guardar_mensaje(telefono, "assistant", texto, "modo_humano", None)
+    await _guardar_memoria(tel, "assistant", texto)
+    await _crm.guardar_mensaje(tel, "assistant", texto, "modo_humano", None)
 
-    # Notificar al Live Chat vía SSE
+    # Notificar al Live Chat vía SSE (sin truncar)
     await broadcast_event({
         "type":     "new_message",
-        "telefono": telefono,
+        "telefono": tel,
         "role":     "assistant",
-        "content":  texto[:300],
+        "content":  texto,
         "ts":       ts,
     })
 
@@ -1012,6 +1014,52 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     100% { background: transparent; }
   }
 
+  .btn-ver-chat {
+    background: none; border: none; cursor: pointer;
+    font-size: .8rem; padding: .1rem .2rem; opacity: .5;
+    transition: opacity .2s; line-height: 1; border-radius: 4px;
+  }
+  .btn-ver-chat:hover { opacity: 1; background: rgba(0,212,255,0.1); }
+
+  /* ── Modal: chat completo ── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; z-index: 2000;
+    background: rgba(0,0,0,0.88); backdrop-filter: blur(10px);
+    align-items: flex-start; justify-content: center;
+    padding: 2rem 1rem; overflow-y: auto;
+  }
+  .modal-box {
+    width: 100%; max-width: 740px;
+    background: #080808;
+    border: 1px solid var(--border);
+    border-radius: 20px; overflow: hidden;
+    box-shadow: 0 0 60px rgba(0,212,255,0.08);
+    position: relative;
+  }
+  .modal-box::after {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--neon-glow), transparent);
+    opacity: .5;
+  }
+  .modal-header {
+    padding: 1.2rem 1.75rem;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    background: rgba(0,212,255,0.03);
+  }
+  .modal-close {
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+    color: var(--txt2); padding: .4rem 1rem; border-radius: 8px;
+    cursor: pointer; font-size: .75rem; font-family: 'Space Grotesk', sans-serif;
+    transition: background .2s, color .2s;
+  }
+  .modal-close:hover { background: rgba(255,34,51,0.12); color: var(--red); border-color: var(--red); }
+  .modal-messages {
+    padding: 1.5rem 1.75rem; display: flex; flex-direction: column;
+    gap: .9rem; max-height: 72vh; overflow-y: auto;
+  }
+
   @media(max-width:860px) {
     .chat-container { grid-template-columns: 1fr; height: auto; }
     .chat-sidebar   { height: 220px; border-right: none; border-bottom: 1px solid var(--border); }
@@ -1177,6 +1225,22 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   </div>
 
 </main>
+
+<!-- Modal: Ver chat completo -->
+<div class="modal-overlay" id="modal-chat" onclick="if(event.target===this)cerrarModal()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div>
+        <div id="modal-nombre" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em"></div>
+        <div id="modal-tel" style="font-size:.68rem;color:var(--txt2);font-family:monospace;margin-top:.3rem"></div>
+      </div>
+      <button class="modal-close" onclick="cerrarModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div class="modal-messages" id="modal-messages">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</div>
 
 <script>
 // ── Chart instance ─────────────────────────────────────────────────────────────
@@ -1368,7 +1432,8 @@ setInterval(refresh, 10_000);
 
 // ── Live Chat ──────────────────────────────────────────────────────────────────
 let contactoActivo = null;
-let conversaciones = [];
+let conversaciones  = [];
+let _chatUltimoTS   = '';   // ISO timestamp del último msg cargado — para deduplicar SSE
 
 // ── SSE connection ─────────────────────────────────────────────────────────────
 let _sse = null;
@@ -1379,12 +1444,14 @@ function conectarSSE() {
     try {
       const d = JSON.parse(e.data);
       if (d.type === 'new_message') {
-        // Actualizar lista lateral
         actualizarConversaciones();
-        // Si es el contacto activo, agregar burbuja
         if (contactoActivo === d.telefono) {
-          agregarBurbuja(d.role, d.content, d.ts);
-          scrollAbajo();
+          // Solo agregar si el mensaje es posterior al historial ya cargado
+          if (!_chatUltimoTS || d.ts > _chatUltimoTS) {
+            agregarBurbuja(d.role, d.content, d.ts);
+            scrollAbajo();
+            _chatUltimoTS = d.ts;
+          }
         } else {
           flashConv(d.telefono);
         }
@@ -1431,7 +1498,10 @@ function renderConvList() {
       </div>
       <div class="conv-item-bottom">
         <span class="conv-item-preview">${preview}${esc((c.ultimo_mensaje||'').slice(0,55))}</span>
-        ${badge}
+        <span style="display:flex;gap:.3rem;align-items:center;flex-shrink:0">
+          ${badge}
+          <button class="btn-ver-chat" title="Ver historial completo" onclick="event.stopPropagation();abrirChatCompleto('${safeTel}','${esc(c.nombre)}')">&#128065;</button>
+        </span>
       </div>
     </div>`;
   }).join('');
@@ -1466,13 +1536,18 @@ async function seleccionarContacto(telefono) {
 function renderHeaderActions(telefono, modoHumano) {
   const el = document.getElementById('chat-header-actions');
   const safeTel = telefono.replace(/['"<>&]/g, '');
+  const conv = conversaciones.find(c => c.telefono === telefono);
+  const nombre = conv ? esc(conv.nombre) : safeTel;
+  const btnVerChat = `<button class="btn-tomar" style="border-color:rgba(0,212,255,.5);background:rgba(0,212,255,.1)" onclick="abrirChatCompleto('${safeTel}','${nombre}')">Ver chat completo</button>`;
   if (modoHumano) {
     el.innerHTML = `
       <span class="modo-badge humano" style="font-size:.65rem;padding:.25rem .8rem">Modo Humano</span>
+      ${btnVerChat}
       <button class="btn-liberar" onclick="liberarLead('${safeTel}')">Liberar IA</button>`;
   } else {
     el.innerHTML = `
       <span class="modo-badge bot" style="font-size:.65rem;padding:.25rem .8rem">Bot activo</span>
+      ${btnVerChat}
       <button class="btn-tomar" onclick="tomarDesdeChat('${safeTel}', this)">Tomar lead</button>`;
   }
 }
@@ -1487,19 +1562,23 @@ async function tomarDesdeChat(telefono, btn) {
 
 // ── Mensajes ───────────────────────────────────────────────────────────────────
 async function cargarMensajes(telefono) {
+  _chatUltimoTS = '';   // reset para este contacto
   const el = document.getElementById('chat-messages');
   el.innerHTML = '<div class="empty" style="margin-top:3rem">Cargando...</div>';
   try {
-    const r = await fetch('/api/conversations/' + encodeURIComponent(telefono) + '/messages');
+    const r = await fetch('/api/chat/' + encodeURIComponent(telefono));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
-    if (!d.mensajes.length) {
+    if (!d.mensajes || !d.mensajes.length) {
       el.innerHTML = '<div class="empty" style="margin-top:3rem">Sin mensajes</div>';
       return;
     }
     el.innerHTML = d.mensajes.map(m => burbuja(m.role, m.content, m.timestamp)).join('');
+    // Registrar timestamp del último mensaje para deduplicar SSE
+    _chatUltimoTS = d.mensajes[d.mensajes.length - 1].timestamp || '';
     scrollAbajo();
-  } catch(_) {
-    el.innerHTML = '<div class="empty" style="margin-top:3rem">Error al cargar</div>';
+  } catch(err) {
+    el.innerHTML = '<div class="empty" style="margin-top:3rem">Error al cargar (' + err.message + ')</div>';
   }
 }
 
@@ -1536,7 +1615,7 @@ async function enviarMensaje() {
   btn.disabled = true; input.disabled = true;
 
   try {
-    const r = await fetch('/api/conversations/' + encodeURIComponent(contactoActivo) + '/send', {
+    const r = await fetch('/api/chat/' + encodeURIComponent(contactoActivo) + '/send', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ mensaje: texto }),
@@ -1544,17 +1623,62 @@ async function enviarMensaje() {
     if (r.ok) {
       input.value = '';
       input.style.height = 'auto';
-      // La burbuja llega vía SSE; si SSE no está disponible la mostramos local
-      agregarBurbuja('assistant', texto, new Date().toISOString());
-      scrollAbajo();
+      // La burbuja llega vía SSE con el ts correcto (no agregar localmente — evita duplicados)
     } else {
-      alert('Error al enviar el mensaje');
+      const err = await r.json().catch(() => ({}));
+      alert('Error al enviar: ' + (err.error || r.status));
     }
   } catch(_) {
-    alert('Error de conexi\\u00f3n');
+    alert('Error de conexi\u00f3n al enviar');
   } finally {
     btn.disabled = false; input.disabled = false; input.focus();
   }
+}
+
+// ── Modal: Ver chat completo ───────────────────────────────────────────────────
+async function abrirChatCompleto(telefono, nombre) {
+  const modal = document.getElementById('modal-chat');
+  const msgsEl = document.getElementById('modal-messages');
+  document.getElementById('modal-nombre').textContent = nombre || telefono;
+  document.getElementById('modal-tel').textContent = '+' + telefono;
+  msgsEl.innerHTML = '<div class="empty">Cargando...</div>';
+  modal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+
+  try {
+    const r = await fetch('/api/chat/' + encodeURIComponent(telefono));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d.mensajes || !d.mensajes.length) {
+      msgsEl.innerHTML = '<div class="empty">Sin mensajes en el historial</div>';
+      return;
+    }
+    msgsEl.innerHTML = d.mensajes.map(m => modalBurbuja(m.role, m.content, m.timestamp)).join('');
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  } catch(err) {
+    msgsEl.innerHTML = '<div class="empty">Error al cargar (' + err.message + ')</div>';
+  }
+}
+
+function cerrarModal() {
+  document.getElementById('modal-chat').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+function modalBurbuja(role, content, ts) {
+  const isBot = role === 'assistant';
+  const align = isBot ? 'flex-end' : 'flex-start';
+  const bg    = isBot ? 'rgba(0,212,255,0.1)' : 'rgba(255,255,255,0.06)';
+  const bdr   = isBot ? '1px solid rgba(0,212,255,0.22)' : '1px solid rgba(255,255,255,0.1)';
+  const br    = isBot ? '16px 16px 4px 16px' : '16px 16px 16px 4px';
+  const label = isBot ? 'Valentina' : 'Cliente';
+  const lclr  = isBot ? 'var(--neon)' : 'rgba(255,255,255,.4)';
+  return `
+  <div style="display:flex;flex-direction:column;align-items:${align};gap:.2rem">
+    <span style="font-size:.58rem;color:${lclr};letter-spacing:.06em;text-transform:uppercase;font-weight:600">${label}</span>
+    <div style="max-width:78%;background:${bg};border:${bdr};border-radius:${br};padding:.65rem 1rem;font-size:.85rem;line-height:1.5;word-break:break-word;white-space:pre-wrap">${esc(content)}</div>
+    <span style="font-size:.58rem;color:rgba(255,255,255,.2);font-family:monospace">${fmtTime(ts)}</span>
+  </div>`;
 }
 
 // ── Utilidades ─────────────────────────────────────────────────────────────────
@@ -1566,6 +1690,11 @@ function esc(str) {
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 (function initChat() {
+  // Escape cierra el modal
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') cerrarModal();
+  });
+
   // Enter envía, Shift+Enter hace salto de línea
   const input = document.getElementById('chat-input');
   if (input) {

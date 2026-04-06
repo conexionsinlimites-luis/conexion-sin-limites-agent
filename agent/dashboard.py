@@ -363,9 +363,11 @@ async def api_conversations():
         lead = info_lead.get(tel, {})
         estado = lead.get("estado") or "nuevo"
         score = lead.get("score") or 0
+        _n = (lead.get("nombre") or "").strip()
+        _nombre = _n if (_n and _n.lower() not in ("desconocido", "cliente", "unknown", "")) else tel
         conversaciones.append({
             "telefono":         tel,
-            "nombre":           lead.get("nombre") or tel,
+            "nombre":           _nombre,
             "estado":           estado,
             "score":            score,
             "ultima_actividad": f["ultima_actividad"],
@@ -406,6 +408,8 @@ async def api_chat_historial(telefono: str):
 @router.post("/api/chat/{telefono}/send")
 async def enviar_mensaje_dashboard(telefono: str, request: Request):
     """Envía un mensaje al contacto vía WhatsApp y lo guarda en historial."""
+    import logging as _log_mod
+    _logger = _log_mod.getLogger("agentkit")
     tel = telefono.lstrip("+")
     try:
         body = await request.json()
@@ -416,26 +420,35 @@ async def enviar_mensaje_dashboard(telefono: str, request: Request):
     if not texto:
         return JSONResponse({"ok": False, "error": "Mensaje vacío"}, status_code=400)
 
-    # Enviar por WhatsApp
-    proveedor = _get_proveedor()
-    enviado = await proveedor.enviar_mensaje(tel, texto)
-
     ts = datetime.utcnow().isoformat()
 
-    # Guardar en memoria conversacional y en CRM
-    await _guardar_memoria(tel, "assistant", texto)
-    await _crm.guardar_mensaje(tel, "assistant", texto, "modo_humano", None)
+    # 1) Guardar en historial primero — el dashboard lo verá aunque WA falle
+    try:
+        await _guardar_memoria(tel, "assistant", texto)
+        await _crm.guardar_mensaje(tel, "assistant", texto, "modo_humano", None)
+    except Exception as e:
+        _logger.error(f"Error guardando mensaje dashboard: {e}")
 
-    # Notificar al Live Chat vía SSE (sin truncar)
+    # 2) Notificar Live Chat vía SSE — actualiza dashboard inmediatamente
     await broadcast_event({
-        "type":     "new_message",
-        "telefono": tel,
-        "role":     "assistant",
-        "content":  texto,
-        "ts":       ts,
+        "type": "new_message", "telefono": tel,
+        "role": "assistant", "content": texto, "ts": ts,
     })
 
-    return JSONResponse({"ok": enviado})
+    # 3) Enviar por WhatsApp (puede fallar sin romper la respuesta)
+    enviado = False
+    wa_error = None
+    try:
+        enviado = await _get_proveedor().enviar_mensaje(tel, texto)
+        if not enviado:
+            wa_error = "El proveedor rechazó el mensaje (revisar token/número)"
+    except Exception as e:
+        wa_error = str(e)
+        _logger.error(f"Error WA en envío dashboard para {tel}: {e}")
+
+    if wa_error:
+        return JSONResponse({"ok": False, "guardado": True, "error": wa_error})
+    return JSONResponse({"ok": True, "guardado": True})
 
 
 # ── API: mensajes recientes ────────────────────────────────────────────────────
@@ -453,18 +466,19 @@ async def api_messages():
             LIMIT 30
         """) as c:
             rows = await c.fetchall()
-            mensajes = [
-                {
+            mensajes = []
+            for r in rows:
+                _n = (r["nombre"] or "").strip()
+                _nombre = _n if (_n and _n.lower() not in ("desconocido", "cliente", "unknown", "")) else r["telefono"]
+                mensajes.append({
                     "telefono":   r["telefono"],
-                    "nombre":     r["nombre"] or r["telefono"],
+                    "nombre":     _nombre,
                     "rol":        r["rol"],
-                    "mensaje":    r["mensaje"][:120] + ("…" if len(r["mensaje"]) > 120 else ""),
+                    "mensaje":    r["mensaje"][:100] + ("…" if len(r["mensaje"]) > 100 else ""),
                     "timestamp":  r["timestamp"],
                     "estado":     r["estado_lead"] or "—",
                     "intencion":  r["intencion_detectada"] or "—",
-                }
-                for r in rows
-            ]
+                })
     return JSONResponse({"mensajes": mensajes})
 
 
@@ -779,26 +793,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     font-family: 'Space Grotesk', sans-serif;
   }
 
-  /* ── tabla mensajes ── */
-  .msg-wrap { max-height: 420px; overflow-y: auto; }
-
-  .msg-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
-  .msg-table thead th {
-    text-align: left; padding: .65rem .9rem;
-    font-size: .58rem; font-weight: 700;
-    color: var(--txt2); text-transform: uppercase;
-    letter-spacing: .12em;
-    border-bottom: 1px solid var(--border);
-    font-family: 'Orbitron', sans-serif;
-    background: transparent;
-  }
-  .msg-table td {
-    padding: .7rem .9rem;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-    vertical-align: middle;
-  }
-  .msg-table tr:hover td { background: var(--glass-h); }
-  .msg-table tr:last-child td { border-bottom: none; }
+  /* (tabla de mensajes reemplazada por tarjetas — ver .msg-card-list) */
 
   .tag-user      { color: var(--neon);  font-weight: 700; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
   .tag-assistant { color: var(--txt2);  font-weight: 600; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
@@ -929,10 +924,10 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     display: flex; justify-content: space-between; align-items: center;
     font-family: 'Orbitron', sans-serif;
   }
-  .conv-list { flex: 1; overflow-y: auto; }
+  .conv-list { flex: 1; overflow-y: auto; min-height: 0; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 
   .conv-item {
-    padding: .75rem 1.1rem;
+    padding: .65rem 1rem;
     cursor: pointer;
     border-bottom: 1px solid rgba(255,255,255,0.04);
     border-left: 3px solid transparent;
@@ -958,7 +953,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .modo-badge.humano { background: rgba(168,85,247,0.15); border: 1px solid rgba(168,85,247,0.4); color: #c084fc; }
   .modo-badge.bot    { background: rgba(0,212,255,0.08);  border: 1px solid rgba(0,212,255,0.25); color: var(--neon); }
 
-  .chat-main { display: flex; flex-direction: column; min-width: 0; }
+  .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
   .chat-main-header {
     padding: .85rem 1.4rem;
@@ -976,6 +971,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     flex: 1; overflow-y: auto;
     padding: 1.2rem 1.4rem;
     display: flex; flex-direction: column; gap: .5rem;
+    min-height: 0;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   .msg-bubble-wrap { display: flex; flex-direction: column; }
@@ -1139,11 +1137,11 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     .lead-phone { font-size: .62rem; }
     .btn-tomar, .btn-liberar { font-size: .54rem; padding: .2rem .55rem; }
 
-    /* Tabla mensajes: scroll horizontal en móvil */
-    .msg-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    .msg-table { min-width: 520px; font-size: .72rem; }
-    .msg-table thead th { font-size: .52rem; padding: .5rem .65rem; }
-    .msg-table td { padding: .55rem .65rem; }
+    /* Mensajes tarjetas en móvil */
+    .msg-card { grid-template-columns: 34px 1fr auto; gap: .5rem; padding: .55rem .65rem; }
+    .msg-avatar { width: 34px; height: 34px; font-size: .72rem; }
+    .msg-card-name { font-size: .78rem; }
+    .msg-card-preview { font-size: .68rem; }
 
     /* Live Chat móvil */
     .chat-container { margin-bottom: 1.5rem; }
@@ -1173,6 +1171,54 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     .logo-name { font-size: .65rem; }
     .chat-sidebar { height: 160px; }
     .chat-main    { height: 360px; }
+  }
+
+  /* ── Mensajes recientes — tarjetas ────────────────────────────────────── */
+  .msg-card-list {
+    display: flex; flex-direction: column; gap: .35rem;
+    max-height: 520px; overflow-y: auto;
+    -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  }
+  .msg-card {
+    display: grid;
+    grid-template-columns: 40px 1fr auto;
+    gap: .75rem; align-items: center;
+    padding: .65rem .9rem; border-radius: 10px;
+    background: rgba(255,255,255,.02);
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  .msg-card:hover {
+    background: var(--glass-h);
+    border-color: var(--border);
+  }
+  .msg-avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: .82rem; font-weight: 700; flex-shrink: 0;
+    font-family: 'Space Grotesk', sans-serif; letter-spacing: -.01em;
+  }
+  .msg-card-body { min-width: 0; }
+  .msg-card-name {
+    font-size: .84rem; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: flex; align-items: center; gap: .4rem;
+    margin-bottom: .18rem;
+  }
+  .msg-card-preview {
+    font-size: .72rem; color: var(--txt2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    line-height: 1.4;
+  }
+  .msg-card-preview.bot-msg { color: rgba(0,212,255,.6); }
+  .msg-card-right {
+    display: flex; flex-direction: column;
+    align-items: flex-end; gap: .3rem; flex-shrink: 0;
+  }
+  .msg-card-time { font-size: .6rem; color: var(--txt3); font-family: monospace; white-space: nowrap; }
+  .msg-role-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
   }
 
   /* ── input de modo humano — indicador visual ── */
@@ -1337,25 +1383,11 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   </div>
 
   <!-- Mensajes recientes -->
-  <div class="section-label">Historial de conversaciones</div>
+  <div class="section-label">Actividad reciente</div>
   <div class="card" style="margin-bottom:2.5rem">
-    <div class="card-title">Mensajes recientes</div>
-    <div class="msg-wrap">
-      <table class="msg-table">
-        <thead>
-          <tr>
-            <th>Contacto</th>
-            <th>Rol</th>
-            <th>Mensaje</th>
-            <th>Estado</th>
-            <th>Intenci&oacute;n</th>
-            <th>Hora</th>
-          </tr>
-        </thead>
-        <tbody id="msgs-body">
-          <tr><td colspan="6" class="empty">Sin datos</td></tr>
-        </tbody>
-      </table>
+    <div class="card-title">Últimos mensajes por contacto</div>
+    <div class="msg-card-list" id="msgs-list">
+      <div class="empty">Sin datos</div>
     </div>
   </div>
 
@@ -1535,22 +1567,56 @@ async function actualizarLeads() {
   `).join('');
 }
 
+// ── Color avatar por teléfono ─────────────────────────────────────────────────
+function avatarColor(tel) {
+  const palette = ['#00D4FF','#FF2233','#00FF88','#FF8C00','#c084fc','#F59E0B','#10B981','#3B82F6','#EC4899'];
+  let h = 0;
+  for (let i = 0; i < tel.length; i++) h = (Math.imul(31, h) + tel.charCodeAt(i)) | 0;
+  return palette[Math.abs(h) % palette.length];
+}
+
 // ── Actualizar mensajes ────────────────────────────────────────────────────────
 async function actualizarMensajes() {
   const r = await fetch('/api/messages');
   const d = await r.json();
-  const el = document.getElementById('msgs-body');
-  if (!d.mensajes.length) { el.innerHTML = '<tr><td colspan="6" class="empty">Sin mensajes</td></tr>'; return; }
-  el.innerHTML = d.mensajes.map(m => `
-    <tr class="fade-in">
-      <td style="font-weight:600;font-size:.8rem">${m.nombre}</td>
-      <td><span class="${m.rol==='user'?'tag-user':'tag-assistant'}">${m.rol}</span></td>
-      <td class="msg-text">${m.mensaje}</td>
-      <td>${m.estado!=='—' ? estadoBadge(m.estado,'#00D4FF') : '<span style="color:rgba(255,255,255,.15)">—</span>'}</td>
-      <td>${m.intencion!=='—' ? intencionTag(m.intencion) : '<span style="color:rgba(255,255,255,.15)">—</span>'}</td>
-      <td class="msg-time">${fmtTime(m.timestamp)}</td>
-    </tr>
-  `).join('');
+  const el = document.getElementById('msgs-list');
+  if (!d.mensajes.length) { el.innerHTML = '<div class="empty">Sin mensajes</div>'; return; }
+
+  // Un card por contacto — mostrar su último mensaje (API ya viene DESC)
+  const seen = new Set();
+  const porContacto = [];
+  for (const m of d.mensajes) {
+    if (!seen.has(m.telefono)) { seen.add(m.telefono); porContacto.push(m); }
+  }
+
+  el.innerHTML = porContacto.map(m => {
+    const nombre = m.nombre || m.telefono;
+    const inicial = nombre.replace(/[^a-zA-Z0-9]/g, '').charAt(0).toUpperCase() || '#';
+    const color   = avatarColor(m.telefono);
+    const esBot   = m.rol === 'assistant';
+    const safeTel = m.telefono.replace(/['"<>&]/g, '');
+    const previewClass = esBot ? 'msg-card-preview bot-msg' : 'msg-card-preview';
+    const prefix = esBot ? '↩ ' : '';
+    const estadoHtml = m.estado !== '—'
+      ? estadoBadge(m.estado, '#00D4FF')
+      : '';
+    const intHtml = m.intencion !== '—' ? intencionTag(m.intencion) : '';
+    return `
+    <div class="msg-card fade-in" onclick="seleccionarContacto('${safeTel}')">
+      <div class="msg-avatar" style="background:${color}22;color:${color};border:1.5px solid ${color}55">${inicial}</div>
+      <div class="msg-card-body">
+        <div class="msg-card-name">
+          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nombre)}</span>
+          ${estadoHtml}
+        </div>
+        <div class="${previewClass}">${prefix}${esc(m.mensaje)}</div>
+      </div>
+      <div class="msg-card-right">
+        <div class="msg-card-time">${fmtTime(m.timestamp)}</div>
+        ${intHtml}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ── Loop ───────────────────────────────────────────────────────────────────────
@@ -1619,24 +1685,32 @@ function renderConvList() {
     return;
   }
   el.innerHTML = conversaciones.map(c => {
-    const activo = c.telefono === contactoActivo ? ' active' : '';
-    const badge = c.modo_humano
+    const activo  = c.telefono === contactoActivo ? ' active' : '';
+    const badge   = c.modo_humano
       ? '<span class="modo-badge humano">Humano</span>'
       : '<span class="modo-badge bot">Bot</span>';
     const preview = c.ultimo_rol === 'assistant' ? '↩ ' : '';
     const safeTel = c.telefono.replace(/['"<>&]/g, '');
+    const nombre  = c.nombre || c.telefono;
+    const inicial = nombre.replace(/[^a-zA-Z0-9]/g, '').charAt(0).toUpperCase() || '#';
+    const color   = avatarColor(c.telefono);
     return `
     <div class="conv-item${activo}" id="conv-${safeTel}" onclick="seleccionarContacto('${safeTel}')">
-      <div class="conv-item-top">
-        <span class="conv-item-name" title="${esc(c.nombre)}">${esc(c.nombre)}</span>
-        <span class="conv-item-time">${fmtTime(c.ultima_actividad)}</span>
-      </div>
-      <div class="conv-item-bottom">
-        <span class="conv-item-preview">${preview}${esc((c.ultimo_mensaje||'').slice(0,55))}</span>
-        <span style="display:flex;gap:.3rem;align-items:center;flex-shrink:0">
-          ${badge}
-          <button class="btn-ver-chat" title="Ver historial completo" onclick="event.stopPropagation();abrirChatCompleto('${safeTel}','${esc(c.nombre)}')">&#128065;</button>
-        </span>
+      <div style="display:flex;gap:.65rem;align-items:center;min-width:0">
+        <div style="width:36px;height:36px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;font-family:'Space Grotesk',sans-serif;background:${color}22;color:${color};border:1.5px solid ${color}44">${inicial}</div>
+        <div style="min-width:0;flex:1">
+          <div class="conv-item-top">
+            <span class="conv-item-name" title="${esc(nombre)}">${esc(nombre)}</span>
+            <span class="conv-item-time">${fmtTime(c.ultima_actividad)}</span>
+          </div>
+          <div class="conv-item-bottom">
+            <span class="conv-item-preview">${preview}${esc((c.ultimo_mensaje||'').slice(0,45))}</span>
+            <span style="display:flex;gap:.3rem;align-items:center;flex-shrink:0">
+              ${badge}
+              <button class="btn-ver-chat" title="Ver historial completo" onclick="event.stopPropagation();abrirChatCompleto('${safeTel}','${esc(nombre)}')">&#128065;</button>
+            </span>
+          </div>
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -1759,19 +1833,30 @@ async function enviarMensaje() {
   const btn = document.getElementById('chat-send-btn');
   btn.disabled = true; input.disabled = true;
 
+  // Agregar burbuja localmente de inmediato — no esperar SSE
+  const tsLocal = new Date().toISOString();
+  agregarBurbuja('assistant', texto, tsLocal);
+  scrollAbajo();
+  _chatUltimoTS = tsLocal;   // evitar que SSE duplique esta burbuja
+  input.value = '';
+  input.style.height = 'auto';
+
   try {
     const r = await fetch('/api/chat/' + encodeURIComponent(contactoActivo) + '/send', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ mensaje: texto }),
     });
-    if (r.ok) {
-      input.value = '';
-      input.style.height = 'auto';
-      // La burbuja llega vía SSE con el ts correcto (no agregar localmente — evita duplicados)
-    } else {
-      const err = await r.json().catch(() => ({}));
-      alert('Error al enviar: ' + (err.error || r.status));
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.ok === false) {
+      // Marcar la última burbuja como error
+      const burbujas = document.querySelectorAll('#chat-messages .msg-bubble.assistant');
+      if (burbujas.length) {
+        const last = burbujas[burbujas.length - 1];
+        last.style.opacity = '.55';
+        last.title = 'Error al enviar a WhatsApp: ' + (data.error || 'sin detalle');
+      }
+      if (data.error) console.warn('WA send error:', data.error);
     }
   } catch(_) {
     alert('Error de conexi\u00f3n al enviar');

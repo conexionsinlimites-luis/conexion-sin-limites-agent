@@ -19,7 +19,7 @@ from agent.brain import generar_respuesta
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
 from agent.transcriber import transcribir
-from agent.config import PORT, ENVIRONMENT
+from agent.config import PORT, ENVIRONMENT, TELEFONO_OWNER
 import agent.crm as crm
 from agent.scheduler import iniciar_scheduler
 from agent.dashboard import router as dashboard_router, broadcast_event
@@ -198,6 +198,8 @@ async def webhook_handler(request: Request):
                 await crm.actualizar_estado(msg.telefono, nuevo_estado)
                 estado_actual = nuevo_estado
                 _log("INFO", f"Lead {msg.telefono} avanzó a estado: {estado_actual}")
+                if nuevo_estado == "caliente":
+                    await _enviar_notificacion_caliente(msg.telefono)
             else:
                 await crm.incrementar_mensajes_estado(msg.telefono)
 
@@ -299,6 +301,39 @@ def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:
     }
     respuesta_limpia = re.sub(patron, "", respuesta).strip()
     return respuesta_limpia, datos
+
+
+async def _enviar_notificacion_caliente(telefono_cliente: str):
+    """Avisa al dueño por WhatsApp cuando un lead se vuelve caliente."""
+    lead = await crm.obtener_lead(telefono_cliente)
+    if not lead:
+        return
+    nombre   = lead.get("nombre") or "Cliente"
+    score    = lead.get("score", 0)
+    producto = lead.get("subproducto") or "Telecom"
+    resumen  = lead.get("lead_resumen") or "—"
+    tel      = telefono_cliente.replace("+", "").replace(" ", "")
+    wa_link  = f"https://wa.me/{tel}"
+
+    mensaje = (
+        f"🔥 *LEAD CALIENTE — VALENTINA*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 *{nombre}*\n"
+        f"📱 {wa_link}\n"
+        f"⭐ Score: {score}/100\n"
+        f"📦 {producto}\n"
+        f"📋 _{resumen}_\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Entra al dashboard para tomar el lead."
+    )
+    try:
+        enviado = await proveedor.enviar_mensaje(TELEFONO_OWNER, mensaje)
+        if enviado:
+            _log("INFO", f"Notif. lead caliente enviada — {nombre} ({tel})")
+        else:
+            _log("ERROR", f"Notif. lead caliente falló para {tel}")
+    except Exception as e:
+        _log("ERROR", f"Error notificando lead caliente: {e}")
 
 
 async def _enviar_alerta_supervisor(datos: dict, telefono_cliente: str):

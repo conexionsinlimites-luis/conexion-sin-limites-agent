@@ -16,7 +16,7 @@ from datetime import datetime, date
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from agent.config import DB_PATH as MEMORY_DB_PATH
+from agent.config import DB_PATH as MEMORY_DB_PATH, TELEFONO_OWNER
 from agent.crm import DB_PATH
 import agent.crm as _crm
 from agent.memory import guardar_mensaje as _guardar_memoria
@@ -229,7 +229,15 @@ async def api_leads():
 @router.post("/api/leads/{telefono}/tomar")
 async def tomar_lead(telefono: str):
     """Activa modo_humano: pausa las respuestas de Valentina y cancela follow-ups."""
+    nombre = "Cliente"
     async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT nombre FROM leads WHERE telefono = ?", (telefono,)
+        ) as c:
+            row = await c.fetchone()
+            if row and row["nombre"]:
+                nombre = row["nombre"]
         await db.execute(
             "UPDATE leads SET estado = 'modo_humano', ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?",
             (telefono,)
@@ -240,6 +248,23 @@ async def tomar_lead(telefono: str):
         )
         await db.commit()
     await broadcast_event({"type": "mode_change", "telefono": telefono, "modo_humano": True})
+
+    # Notificar al dueño por WhatsApp que tomó el control de este lead
+    try:
+        tel_limpio = telefono.replace("+", "").replace(" ", "")
+        wa_link = f"https://wa.me/{tel_limpio}"
+        mensaje = (
+            f"🟣 *MODO HUMANO ACTIVADO*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 *{nombre}* (+{tel_limpio})\n"
+            f"💬 Abrir chat: {wa_link}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"El bot está pausado. Responde desde el dashboard."
+        )
+        await _get_proveedor().enviar_mensaje(TELEFONO_OWNER, mensaje)
+    except Exception:
+        pass
+
     return JSONResponse({"ok": True, "telefono": telefono, "estado": "modo_humano"})
 
 
@@ -1065,6 +1090,115 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     .chat-sidebar   { height: 220px; border-right: none; border-bottom: 1px solid var(--border); }
     .chat-main      { height: 440px; }
   }
+
+  /* ── MOBILE RESPONSIVE ────────────────────────────────────── */
+  @media(max-width:768px) {
+    header {
+      padding: 0 1rem;
+      height: auto;
+      min-height: 54px;
+      flex-wrap: wrap;
+      gap: .3rem;
+      padding-top: .5rem;
+      padding-bottom: .5rem;
+    }
+    .logo-icon { width: 30px; height: 30px; font-size: .9rem; border-radius: 6px; }
+    .logo-name { font-size: .72rem; letter-spacing: .08em; }
+    .logo-sub  { font-size: .55rem; letter-spacing: .12em; }
+    .header-right { gap: .6rem; }
+    .live-badge { padding: .25rem .65rem; font-size: .6rem; }
+    #last-update { display: none; }
+
+    main { padding: 1rem; }
+
+    .section-label { margin-bottom: .75rem; font-size: .55rem; }
+
+    .kpi-grid { gap: .55rem; margin-bottom: 1.25rem; }
+    .kpi-card { padding: 1rem .9rem; border-radius: 10px; }
+    .kpi-value { font-size: 2rem; }
+    .kpi-label { font-size: .55rem; }
+    .kpi-sub   { font-size: .58rem; }
+
+    .funnel-grid { gap: .6rem; margin-bottom: 1.25rem; }
+    .funnel-card { padding: 1rem 1.1rem; border-radius: 10px; }
+    .funnel-pct  { font-size: 2.2rem; }
+    .funnel-label { font-size: .55rem; }
+
+    .main-grid { gap: .8rem; margin-bottom: 1rem; }
+    .card { padding: 1.1rem 1.1rem; border-radius: 12px; }
+    .chart-wrap { height: 200px; }
+
+    .leads-list { max-height: 220px; }
+    .lead-row   {
+      grid-template-columns: 1.2rem 1fr auto;
+      gap: .4rem; padding: .55rem .7rem;
+    }
+    .lead-row .lead-score { display: none; }
+    .lead-resumen { display: none; }
+    .lead-name  { font-size: .78rem; }
+    .lead-phone { font-size: .62rem; }
+    .btn-tomar, .btn-liberar { font-size: .54rem; padding: .2rem .55rem; }
+
+    /* Tabla mensajes: scroll horizontal en móvil */
+    .msg-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .msg-table { min-width: 520px; font-size: .72rem; }
+    .msg-table thead th { font-size: .52rem; padding: .5rem .65rem; }
+    .msg-table td { padding: .55rem .65rem; }
+
+    /* Live Chat móvil */
+    .chat-container { margin-bottom: 1.5rem; }
+    .chat-sidebar   { height: 185px; }
+    .chat-main      { height: 390px; }
+    .chat-main-header { padding: .65rem 1rem; }
+    .chat-contact-name  { font-size: .82rem; }
+    .chat-contact-phone { font-size: .6rem; }
+    .chat-header-actions { gap: .3rem; }
+    .chat-messages { padding: .9rem 1rem; }
+    .msg-bubble { font-size: .78rem; padding: .5rem .8rem; max-width: 85%; }
+    .chat-input-row { padding: .5rem .7rem; gap: .4rem; }
+    .chat-input { font-size: .78rem; padding: .48rem .75rem; }
+    .chat-send-btn { font-size: .72rem; padding: .48rem .85rem; }
+
+    /* Modal responsive */
+    .modal-overlay { padding: .3rem; align-items: flex-end; }
+    .modal-box     { border-radius: 18px 18px 0 0; max-width: 100%; }
+    .modal-header  { padding: .9rem 1.2rem; }
+    .modal-messages { padding: 1rem 1.1rem; max-height: 76vh; }
+  }
+
+  /* Ajustes extra para pantallas muy pequeñas (< 400px) */
+  @media(max-width:400px) {
+    .kpi-grid { grid-template-columns: repeat(2,1fr); gap: .4rem; }
+    .kpi-value { font-size: 1.75rem; }
+    .logo-name { font-size: .65rem; }
+    .chat-sidebar { height: 160px; }
+    .chat-main    { height: 360px; }
+  }
+
+  /* ── input de modo humano — indicador visual ── */
+  .chat-input-row .human-mode-hint {
+    font-size: .62rem; color: #c084fc;
+    padding: .2rem .7rem .0rem;
+    letter-spacing: .04em;
+    display: none;
+  }
+  .chat-input-row.modo-humano-activo .human-mode-hint { display: block; }
+  .chat-input-row.modo-humano-activo .chat-input {
+    border-color: rgba(168,85,247,0.5);
+  }
+  .chat-input-row.modo-humano-activo .chat-input:focus {
+    border-color: rgba(168,85,247,0.8);
+    box-shadow: 0 0 8px rgba(168,85,247,0.3);
+  }
+  .chat-input-row.modo-humano-activo .chat-send-btn {
+    background: rgba(168,85,247,0.15);
+    border-color: rgba(168,85,247,0.5);
+    color: #c084fc;
+  }
+  .chat-input-row.modo-humano-activo .chat-send-btn:hover:not(:disabled) {
+    background: rgba(168,85,247,0.28);
+    box-shadow: 0 0 12px rgba(168,85,247,0.35);
+  }
 </style>
 </head>
 <body>
@@ -1193,8 +1327,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       <div class="chat-messages" id="chat-messages">
         <div class="empty" style="margin-top:5rem">Selecciona un contacto para ver la conversaci&oacute;n</div>
       </div>
-      <div class="chat-input-row">
-        <textarea class="chat-input" id="chat-input" placeholder="Escribe un mensaje y presiona Enter..." rows="1" disabled></textarea>
+      <div class="chat-input-row" id="chat-input-row">
+        <span class="human-mode-hint">🟣 Modo humano — enviando directo a WhatsApp</span>
+        <textarea class="chat-input" id="chat-input" placeholder="Selecciona una conversación..." rows="1" disabled></textarea>
         <button class="chat-send-btn" id="chat-send-btn" onclick="enviarMensaje()" disabled>Enviar</button>
       </div>
     </div>
@@ -1549,6 +1684,16 @@ function renderHeaderActions(telefono, modoHumano) {
       <span class="modo-badge bot" style="font-size:.65rem;padding:.25rem .8rem">Bot activo</span>
       ${btnVerChat}
       <button class="btn-tomar" onclick="tomarDesdeChat('${safeTel}', this)">Tomar lead</button>`;
+  }
+  // Actualizar el estilo y placeholder del área de input según el modo
+  const inputRow = document.getElementById('chat-input-row');
+  const input    = document.getElementById('chat-input');
+  if (modoHumano) {
+    inputRow.classList.add('modo-humano-activo');
+    input.placeholder = 'Escribe tu respuesta y presiona Enter...';
+  } else {
+    inputRow.classList.remove('modo-humano-activo');
+    input.placeholder = 'Toma el lead primero para responder manualmente...';
   }
 }
 

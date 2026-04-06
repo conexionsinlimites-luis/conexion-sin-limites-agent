@@ -107,3 +107,11 @@ DB_PATH = _get(
     "RUTA_BASE_DE_DATOS",
     default="/app/data/agentkit.db",
 )
+
+# ── Notificaciones al dueño ────────────────────────────────
+# Número que recibe alertas de leads calientes y toma de control
+TELEFONO_OWNER = _get(
+    "TELEFONO_OWNER",
+    "NUMERO_PROPIETARIO",
+    default="56941762315",
+)

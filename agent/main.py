@@ -139,8 +139,9 @@ async def webhook_handler(request: Request):
         return {"status": "ok"}
 
     for msg in mensajes:
-        # Normalizar teléfono: eliminar espacios del webhook antes de cualquier INSERT o query
-        msg.telefono = msg.telefono.replace(" ", "").strip()
+        # Normalizar teléfono: eliminar espacios y sufijo @s.whatsapp.net / @c.us de Whapi
+        raw = msg.telefono.replace(" ", "").strip()
+        msg.telefono = raw.split("@")[0]
 
         if msg.es_propio or (not msg.texto and not msg.audio_id):
             _log("INFO", f"Mensaje ignorado — es_propio={msg.es_propio} texto='{msg.texto}'")
@@ -320,7 +321,7 @@ async def _enviar_notificacion_caliente(telefono_cliente: str):
     score    = lead.get("score", 0)
     producto = lead.get("subproducto") or "Telecom"
     resumen  = lead.get("lead_resumen") or "—"
-    tel      = telefono_cliente.replace("+", "").replace(" ", "")
+    tel      = telefono_cliente.replace("+", "").replace(" ", "").split("@")[0]
     wa_link  = f"https://wa.me/{tel}"
 
     mensaje = (
@@ -350,7 +351,10 @@ async def _enviar_alerta_supervisor(datos: dict, telefono_cliente: str):
     dirección o detecta intención de contratar.
     Combina los datos del marcador con la info actualizada del CRM.
     """
-    tel  = (datos.get("tel") or telefono_cliente).replace("+", "").replace(" ", "").replace("-", "")
+    # Siempre usar el teléfono real del cliente; ignorar el marcador si contiene valores inútiles
+    tel_marcador = (datos.get("tel") or "").replace("+","").replace(" ","").replace("-","").split("@")[0].strip()
+    tel_base     = telefono_cliente.replace("+","").replace(" ","").replace("-","").split("@")[0]
+    tel = tel_base if (not tel_marcador or tel_marcador in ("pendiente","desconocido","")) else tel_marcador
     dir_ = datos.get("dir", "pendiente")
 
     # Enriquecer con datos del CRM (nombre real, estado, score, resumen)

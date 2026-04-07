@@ -11,6 +11,7 @@ Expone tres rutas:
 
 import asyncio
 import json
+import logging
 from datetime import datetime, date
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -20,6 +21,7 @@ from agent.database import get_pool
 import agent.crm as _crm
 from agent.memory import guardar_mensaje as _guardar_memoria
 
+logger = logging.getLogger("agentkit")
 router = APIRouter()
 
 # ── SSE broadcast system ───────────────────────────────────────────────────────
@@ -297,6 +299,10 @@ async def api_conversations():
     """Lista de conversaciones ordenada por última actividad, máx. 50."""
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Debug: cuántos mensajes hay en total
+        total_en_mensajes = await conn.fetchval("SELECT COUNT(*) FROM mensajes")
+        logger.info(f"[api/conversations] mensajes total={total_en_mensajes}")
+
         # 1) Contactos únicos desde la tabla mensajes (memoria IA)
         filas_mem = await conn.fetch("""
             SELECT
@@ -315,16 +321,20 @@ async def api_conversations():
             LIMIT 50
         """)
 
+        logger.info(f"[api/conversations] contactos únicos en mensajes={len(filas_mem)}")
         if not filas_mem:
+            logger.info("[api/conversations] tabla mensajes vacía — no hay conversaciones guardadas")
             return JSONResponse({"conversaciones": []})
 
         telefonos = [f["telefono"] for f in filas_mem]
+        logger.info(f"[api/conversations] teléfonos={telefonos}")
 
         # 2) Enriquecer con datos del CRM (misma DB PostgreSQL)
         crm_rows = await conn.fetch(
             "SELECT telefono, nombre, estado, score FROM leads WHERE telefono = ANY($1)",
             telefonos
         )
+        logger.info(f"[api/conversations] leads encontrados en CRM={len(crm_rows)}")
         info_lead = {r["telefono"]: dict(r) for r in crm_rows}
 
     conversaciones = []
@@ -350,6 +360,36 @@ async def api_conversations():
         })
 
     return JSONResponse({"conversaciones": conversaciones})
+
+
+# ── API: diagnóstico de tablas ─────────────────────────────────────────────────
+
+@router.get("/api/debug/tables")
+async def api_debug_tables():
+    """Cuenta filas en cada tabla para diagnosticar si los datos llegan a la DB."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        counts = {}
+        for tabla in ("mensajes", "leads", "historial_mensajes", "followup_programado"):
+            try:
+                counts[tabla] = await conn.fetchval(f"SELECT COUNT(*) FROM {tabla}")
+            except Exception as e:
+                counts[tabla] = f"ERROR: {e}"
+
+        # Últimas 5 filas de mensajes para verificar formato de timestamp y teléfono
+        try:
+            muestra = await conn.fetch(
+                "SELECT telefono, role, timestamp FROM mensajes ORDER BY timestamp DESC LIMIT 5"
+            )
+            counts["mensajes_muestra"] = [
+                {"tel": r["telefono"], "role": r["role"], "ts": str(r["timestamp"])}
+                for r in muestra
+            ]
+        except Exception as e:
+            counts["mensajes_muestra"] = f"ERROR: {e}"
+
+    logger.info(f"[debug/tables] {counts}")
+    return JSONResponse(counts)
 
 
 # ── API: historial de un contacto — /api/chat/{tel} ───────────────────────────
@@ -1806,12 +1846,14 @@ let _searchQuery   = '';
 async function actualizarConversaciones() {
   try {
     const r = await fetch('/api/conversations');
+    if (!r.ok) { console.error('[LiveChat] /api/conversations HTTP', r.status); return; }
     const d = await r.json();
     conversaciones = d.conversaciones || [];
+    console.log('[LiveChat] conversaciones cargadas:', conversaciones.length);
     const cnt = document.getElementById('wa-conv-count');
     if (cnt) cnt.textContent = conversaciones.length;
     renderConvList();
-  } catch(_) {}
+  } catch(err) { console.error('[LiveChat] actualizarConversaciones error:', err); }
 }
 
 function filtrarContactos(q) { _searchQuery = q.toLowerCase(); renderConvList(); }

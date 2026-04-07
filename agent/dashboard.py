@@ -301,48 +301,43 @@ async def api_conversations():
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            # Debug: total de mensajes en DB
             total_en_mensajes = await conn.fetchval("SELECT COUNT(*) FROM mensajes")
             logger.info(f"[api/conversations] mensajes total={total_en_mensajes}")
 
-            if total_en_mensajes == 0:
+            if not total_en_mensajes:
                 return JSONResponse({"conversaciones": [], "debug": "tabla mensajes vacía"})
 
-            # 1) Contactos únicos — query sin subconsultas correlacionadas para máxima compatibilidad
+            # DISTINCT ON: forma idiomática en PostgreSQL para obtener el último
+            # mensaje por teléfono, sin JOINs ni subconsultas correlacionadas.
+            # El ORDER BY (telefono, timestamp DESC) garantiza que DISTINCT ON
+            # conserva la fila con el timestamp más alto de cada grupo.
             filas_mem = await conn.fetch("""
-                SELECT
-                    g.telefono,
-                    g.ultima_actividad,
-                    g.total_mensajes,
-                    m.content  AS ultimo_mensaje,
-                    m.role     AS ultimo_rol
-                FROM (
-                    SELECT telefono,
-                           MAX(timestamp)  AS ultima_actividad,
-                           COUNT(*)        AS total_mensajes
+                SELECT * FROM (
+                    SELECT DISTINCT ON (telefono)
+                        telefono,
+                        timestamp   AS ultima_actividad,
+                        content     AS ultimo_mensaje,
+                        role        AS ultimo_rol,
+                        COUNT(*) OVER (PARTITION BY telefono) AS total_mensajes
                     FROM mensajes
-                    GROUP BY telefono
-                ) g
-                JOIN mensajes m
-                  ON m.telefono = g.telefono
-                 AND m.timestamp = g.ultima_actividad
-                ORDER BY g.ultima_actividad DESC
+                    ORDER BY telefono, timestamp DESC
+                ) latest
+                ORDER BY ultima_actividad DESC
                 LIMIT 50
             """)
 
-            logger.info(f"[api/conversations] contactos únicos={len(filas_mem)} teléfonos={[f['telefono'] for f in filas_mem]}")
+            logger.info(f"[api/conversations] filas={len(filas_mem)} tels={[f['telefono'] for f in filas_mem]}")
 
             if not filas_mem:
                 return JSONResponse({"conversaciones": [], "debug": "query devolvió 0 filas"})
 
             telefonos = [f["telefono"] for f in filas_mem]
 
-            # 2) Enriquecer con datos del CRM
             crm_rows = await conn.fetch(
                 "SELECT telefono, nombre, estado, score FROM leads WHERE telefono = ANY($1)",
                 telefonos
             )
-            logger.info(f"[api/conversations] leads en CRM={len(crm_rows)}")
+            logger.info(f"[api/conversations] leads CRM={len(crm_rows)}")
             info_lead = {r["telefono"]: dict(r) for r in crm_rows}
 
         conversaciones = []
@@ -367,6 +362,7 @@ async def api_conversations():
                 "prioridad":        calcular_prioridad(estado, score),
             })
 
+        logger.info(f"[api/conversations] retornando {len(conversaciones)} conversaciones")
         return JSONResponse({"conversaciones": conversaciones})
 
     except Exception as e:
@@ -403,6 +399,51 @@ async def api_debug_tables():
 
     logger.info(f"[debug/tables] {counts}")
     return JSONResponse(counts)
+
+
+@router.get("/api/debug/conversations")
+async def api_debug_conversations():
+    """Muestra los resultados crudos de cada paso de api/conversations para diagnóstico."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM mensajes")
+
+            # Paso 1: las primeras 5 filas crudas de mensajes
+            muestra_raw = await conn.fetch(
+                "SELECT telefono, role, content, timestamp FROM mensajes ORDER BY timestamp DESC LIMIT 5"
+            )
+            paso1 = [{"tel": r["telefono"], "role": r["role"], "ts": str(r["timestamp"]),
+                      "content_start": str(r["content"])[:40]} for r in muestra_raw]
+
+            # Paso 2: probar el DISTINCT ON directamente
+            try:
+                distinct_rows = await conn.fetch("""
+                    SELECT DISTINCT ON (telefono)
+                        telefono, timestamp AS ts, role,
+                        COUNT(*) OVER (PARTITION BY telefono) AS cnt
+                    FROM mensajes
+                    ORDER BY telefono, timestamp DESC
+                """)
+                paso2 = [{"tel": r["telefono"], "ts": str(r["ts"]), "role": r["role"],
+                          "cnt": int(r["cnt"])} for r in distinct_rows]
+            except Exception as e2:
+                paso2 = f"ERROR: {e2}"
+
+            # Paso 3: probar el ANY($1) con la lista de teléfonos
+            try:
+                tels = [r["telefono"] for r in muestra_raw]
+                leads_rows = await conn.fetch(
+                    "SELECT telefono, nombre, estado, score FROM leads WHERE telefono = ANY($1)", tels
+                )
+                paso3 = [dict(r) for r in leads_rows]
+            except Exception as e3:
+                paso3 = f"ERROR: {e3}"
+
+        return JSONResponse({"total_mensajes": total, "paso1_muestra": paso1,
+                             "paso2_distinct_on": paso2, "paso3_leads": paso3})
+    except Exception as e:
+        return JSONResponse({"error": str(e), "traceback": traceback.format_exc()}, status_code=500)
 
 
 # ── API: historial de un contacto — /api/chat/{tel} ───────────────────────────

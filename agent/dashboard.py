@@ -340,7 +340,7 @@ async def api_conversations():
             "nombre":           _nombre,
             "estado":           estado,
             "score":            score,
-            "ultima_actividad": f["ultima_actividad"],
+            "ultima_actividad": str(f["ultima_actividad"]),
             "ultimo_mensaje":   f["ultimo_mensaje"] or "",
             "ultimo_rol":       f["ultimo_rol"] or "user",
             "total_mensajes":   f["total_mensajes"],
@@ -365,7 +365,7 @@ async def api_chat_historial(telefono: str):
             tel
         )
     mensajes = [
-        {"role": f["role"], "content": f["content"], "timestamp": f["timestamp"]}
+        {"role": f["role"], "content": f["content"], "timestamp": str(f["timestamp"])}
         for f in filas
     ]
     return JSONResponse({"mensajes": mensajes, "telefono": tel})

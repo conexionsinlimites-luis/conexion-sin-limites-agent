@@ -12,6 +12,7 @@ Expone tres rutas:
 import asyncio
 import json
 import logging
+import traceback
 from datetime import datetime, date
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -297,69 +298,81 @@ async def sse_events(request: Request):
 @router.get("/api/conversations")
 async def api_conversations():
     """Lista de conversaciones ordenada por última actividad, máx. 50."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # Debug: cuántos mensajes hay en total
-        total_en_mensajes = await conn.fetchval("SELECT COUNT(*) FROM mensajes")
-        logger.info(f"[api/conversations] mensajes total={total_en_mensajes}")
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            # Debug: total de mensajes en DB
+            total_en_mensajes = await conn.fetchval("SELECT COUNT(*) FROM mensajes")
+            logger.info(f"[api/conversations] mensajes total={total_en_mensajes}")
 
-        # 1) Contactos únicos desde la tabla mensajes (memoria IA)
-        filas_mem = await conn.fetch("""
-            SELECT
-                telefono,
-                MAX(timestamp)  AS ultima_actividad,
-                COUNT(*)        AS total_mensajes,
-                (SELECT content FROM mensajes m2
-                 WHERE m2.telefono = mensajes.telefono
-                 ORDER BY m2.timestamp DESC LIMIT 1) AS ultimo_mensaje,
-                (SELECT role FROM mensajes m2
-                 WHERE m2.telefono = mensajes.telefono
-                 ORDER BY m2.timestamp DESC LIMIT 1) AS ultimo_rol
-            FROM mensajes
-            GROUP BY telefono
-            ORDER BY ultima_actividad DESC
-            LIMIT 50
-        """)
+            if total_en_mensajes == 0:
+                return JSONResponse({"conversaciones": [], "debug": "tabla mensajes vacía"})
 
-        logger.info(f"[api/conversations] contactos únicos en mensajes={len(filas_mem)}")
-        if not filas_mem:
-            logger.info("[api/conversations] tabla mensajes vacía — no hay conversaciones guardadas")
-            return JSONResponse({"conversaciones": []})
+            # 1) Contactos únicos — query sin subconsultas correlacionadas para máxima compatibilidad
+            filas_mem = await conn.fetch("""
+                SELECT
+                    g.telefono,
+                    g.ultima_actividad,
+                    g.total_mensajes,
+                    m.content  AS ultimo_mensaje,
+                    m.role     AS ultimo_rol
+                FROM (
+                    SELECT telefono,
+                           MAX(timestamp)  AS ultima_actividad,
+                           COUNT(*)        AS total_mensajes
+                    FROM mensajes
+                    GROUP BY telefono
+                ) g
+                JOIN mensajes m
+                  ON m.telefono = g.telefono
+                 AND m.timestamp = g.ultima_actividad
+                ORDER BY g.ultima_actividad DESC
+                LIMIT 50
+            """)
 
-        telefonos = [f["telefono"] for f in filas_mem]
-        logger.info(f"[api/conversations] teléfonos={telefonos}")
+            logger.info(f"[api/conversations] contactos únicos={len(filas_mem)} teléfonos={[f['telefono'] for f in filas_mem]}")
 
-        # 2) Enriquecer con datos del CRM (misma DB PostgreSQL)
-        crm_rows = await conn.fetch(
-            "SELECT telefono, nombre, estado, score FROM leads WHERE telefono = ANY($1)",
-            telefonos
-        )
-        logger.info(f"[api/conversations] leads encontrados en CRM={len(crm_rows)}")
-        info_lead = {r["telefono"]: dict(r) for r in crm_rows}
+            if not filas_mem:
+                return JSONResponse({"conversaciones": [], "debug": "query devolvió 0 filas"})
 
-    conversaciones = []
-    for f in filas_mem:
-        tel = f["telefono"]
-        lead = info_lead.get(tel, {})
-        estado = lead.get("estado") or "nuevo"
-        score  = lead.get("score") or 0
-        _n = (lead.get("nombre") or "").strip()
-        _nombre = _n if (_n and _n.lower() not in ("desconocido", "cliente", "unknown", "")) else tel
-        conversaciones.append({
-            "telefono":         tel,
-            "nombre":           _nombre,
-            "estado":           estado,
-            "score":            score,
-            "ultima_actividad": str(f["ultima_actividad"]),
-            "ultimo_mensaje":   f["ultimo_mensaje"] or "",
-            "ultimo_rol":       f["ultimo_rol"] or "user",
-            "total_mensajes":   f["total_mensajes"],
-            "modo_humano":      estado == "modo_humano",
-            "color":            COLOR_ESTADO.get(estado, "#888"),
-            "prioridad":        calcular_prioridad(estado, score),
-        })
+            telefonos = [f["telefono"] for f in filas_mem]
 
-    return JSONResponse({"conversaciones": conversaciones})
+            # 2) Enriquecer con datos del CRM
+            crm_rows = await conn.fetch(
+                "SELECT telefono, nombre, estado, score FROM leads WHERE telefono = ANY($1)",
+                telefonos
+            )
+            logger.info(f"[api/conversations] leads en CRM={len(crm_rows)}")
+            info_lead = {r["telefono"]: dict(r) for r in crm_rows}
+
+        conversaciones = []
+        for f in filas_mem:
+            tel    = f["telefono"]
+            lead   = info_lead.get(tel, {})
+            estado = lead.get("estado") or "nuevo"
+            score  = int(lead.get("score") or 0)
+            _n     = (lead.get("nombre") or "").strip()
+            nombre = _n if (_n and _n.lower() not in ("desconocido", "cliente", "unknown", "")) else tel
+            conversaciones.append({
+                "telefono":         tel,
+                "nombre":           nombre,
+                "estado":           estado,
+                "score":            score,
+                "ultima_actividad": str(f["ultima_actividad"]),
+                "ultimo_mensaje":   str(f["ultimo_mensaje"] or ""),
+                "ultimo_rol":       str(f["ultimo_rol"] or "user"),
+                "total_mensajes":   int(f["total_mensajes"]),
+                "modo_humano":      estado == "modo_humano",
+                "color":            COLOR_ESTADO.get(estado, "#888"),
+                "prioridad":        calcular_prioridad(estado, score),
+            })
+
+        return JSONResponse({"conversaciones": conversaciones})
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"[api/conversations] ERROR: {e}\n{tb}")
+        return JSONResponse({"conversaciones": [], "error": str(e), "traceback": tb}, status_code=500)
 
 
 # ── API: diagnóstico de tablas ─────────────────────────────────────────────────
@@ -398,17 +411,23 @@ async def api_debug_tables():
 async def api_chat_historial(telefono: str):
     """Retorna el historial completo de mensajes de un contacto."""
     tel = telefono.lstrip("+")
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        filas = await conn.fetch(
-            "SELECT role, content, timestamp FROM mensajes WHERE telefono = $1 ORDER BY timestamp ASC",
-            tel
-        )
-    mensajes = [
-        {"role": f["role"], "content": f["content"], "timestamp": str(f["timestamp"])}
-        for f in filas
-    ]
-    return JSONResponse({"mensajes": mensajes, "telefono": tel})
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            filas = await conn.fetch(
+                "SELECT role, content, timestamp FROM mensajes WHERE telefono = $1 ORDER BY timestamp ASC",
+                tel
+            )
+        mensajes = [
+            {"role": f["role"], "content": f["content"], "timestamp": str(f["timestamp"])}
+            for f in filas
+        ]
+        logger.info(f"[api/chat] telefono={tel} mensajes={len(mensajes)}")
+        return JSONResponse({"mensajes": mensajes, "telefono": tel})
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"[api/chat] ERROR telefono={tel}: {e}\n{tb}")
+        return JSONResponse({"mensajes": [], "telefono": tel, "error": str(e)}, status_code=500)
 
 
 # ── API: enviar mensaje desde el dashboard — /api/chat/{tel}/send ─────────────

@@ -256,6 +256,15 @@ async def liberar_lead(telefono: str):
             "UPDATE leads SET estado = 'seguimiento', ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = $1",
             telefono
         )
+    # Inyectar mensaje interno para que Valentina retome el contexto
+    try:
+        await _crm.guardar_mensaje(
+            telefono, "user",
+            "Valentina, continúa atendiendo a este cliente",
+            "seguimiento", None
+        )
+    except Exception:
+        pass
     await broadcast_event({"type": "mode_change", "telefono": telefono, "modo_humano": False})
     return JSONResponse({"ok": True, "telefono": telefono, "estado": "seguimiento"})
 
@@ -316,10 +325,10 @@ async def api_conversations():
                     SELECT DISTINCT ON (REPLACE(telefono, ' ', ''))
                         REPLACE(telefono, ' ', '')  AS telefono,
                         timestamp                   AS ultima_actividad,
-                        content                     AS ultimo_mensaje,
-                        role                        AS ultimo_rol,
+                        mensaje                     AS ultimo_mensaje,
+                        rol                         AS ultimo_rol,
                         COUNT(*) OVER (PARTITION BY REPLACE(telefono, ' ', '')) AS total_mensajes
-                    FROM mensajes
+                    FROM historial_mensajes
                     ORDER BY REPLACE(telefono, ' ', ''), timestamp DESC
                 ) latest
                 ORDER BY ultima_actividad DESC
@@ -457,7 +466,7 @@ async def api_chat_historial(telefono: str):
         pool = await get_pool()
         async with pool.acquire() as conn:
             filas = await conn.fetch(
-                "SELECT role, content, timestamp FROM mensajes WHERE REPLACE(telefono, ' ', '') = $1 ORDER BY timestamp ASC",
+                "SELECT rol AS role, mensaje AS content, timestamp FROM historial_mensajes WHERE REPLACE(telefono, ' ', '') = $1 ORDER BY timestamp ASC",
                 tel
             )
         mensajes = [
@@ -1305,6 +1314,17 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   }
   .tab-btn.active { background: rgba(0,212,255,.15); color: var(--neon); box-shadow: 0 0 10px rgba(0,212,255,.2); }
   .tab-btn:hover:not(.active) { color: var(--txt); background: rgba(255,255,255,.06); }
+  .btn-live {
+    padding: .32rem 1rem; border-radius: 18px; border: 1px solid var(--border);
+    background: transparent; color: var(--txt2); font-size: .72rem; font-weight: 600;
+    cursor: pointer; font-family: 'Space Grotesk', sans-serif; letter-spacing: .04em;
+    transition: all .2s; white-space: nowrap;
+  }
+  .btn-live.active {
+    background: rgba(0,212,255,.15); color: var(--neon);
+    border-color: var(--neon); box-shadow: 0 0 10px rgba(0,212,255,.25);
+  }
+  .btn-live:hover:not(.active) { color: var(--txt); background: rgba(255,255,255,.06); }
 
   /* ── PANELS ─────────────────────────────────────────────────── */
   #panel-metrics {
@@ -1494,8 +1514,8 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   </div>
   <nav class="tab-nav">
     <button class="tab-btn active" id="tab-metricas" onclick="switchTab('metricas')">&#128200; M&eacute;tricas</button>
-    <button class="tab-btn" id="tab-chat" onclick="switchTab('chat')">&#128172; Live Chat</button>
   </nav>
+  <button class="btn-live" id="btn-live" onclick="toggleLive()">&#128172; Live</button>
   <div class="header-right">
     <div class="live-badge"><div class="live-dot"></div>EN VIVO</div>
     <div id="last-update">Iniciando...</div>
@@ -1780,16 +1800,28 @@ async function liberarLead(telefono) {
 // =========================================================================
 function switchTab(tab) {
   const pm = document.getElementById('panel-metrics');
-  const pc = document.getElementById('panel-chat');
   const bm = document.getElementById('tab-metricas');
-  const bc = document.getElementById('tab-chat');
   if (tab === 'metricas') {
-    pm.style.display = ''; pc.style.display = 'none';
+    pm.style.display = '';
+    bm.classList.add('active');
+  }
+}
+
+function toggleLive() {
+  const pc  = document.getElementById('panel-chat');
+  const btn = document.getElementById('btn-live');
+  const pm  = document.getElementById('panel-metrics');
+  const abierto = pc.style.display === 'flex';
+  if (abierto) {
+    pc.style.display = 'none';
     pc.style.flexDirection = '';
-    bm.classList.add('active'); bc.classList.remove('active');
+    pm.style.display = '';
+    btn.classList.remove('active');
   } else {
-    pm.style.display = 'none'; pc.style.display = 'flex'; pc.style.flexDirection = 'column';
-    bc.classList.add('active'); bm.classList.remove('active');
+    pm.style.display = 'none';
+    pc.style.display = 'flex';
+    pc.style.flexDirection = 'column';
+    btn.classList.add('active');
     actualizarConversaciones();
   }
 }
@@ -2037,7 +2069,8 @@ async function tomarLeadChat(telefono, btn) {
   } catch(_) { btn.disabled=false; btn.textContent='Tomar lead'; }
 }
 async function liberarLeadChat(telefono) {
-  await fetch('/api/leads/'+encodeURIComponent(telefono)+'/liberar', { method:'POST' });
+  const r = await fetch('/api/leads/'+encodeURIComponent(telefono)+'/liberar', { method:'POST' });
+  if (r.ok) renderChatHeader(telefono, false);
 }
 
 // =========================================================================

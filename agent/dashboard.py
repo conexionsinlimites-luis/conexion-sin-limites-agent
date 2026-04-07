@@ -313,14 +313,14 @@ async def api_conversations():
             # conserva la fila con el timestamp más alto de cada grupo.
             filas_mem = await conn.fetch("""
                 SELECT * FROM (
-                    SELECT DISTINCT ON (telefono)
-                        telefono,
-                        timestamp   AS ultima_actividad,
-                        content     AS ultimo_mensaje,
-                        role        AS ultimo_rol,
-                        COUNT(*) OVER (PARTITION BY telefono) AS total_mensajes
+                    SELECT DISTINCT ON (REPLACE(telefono, ' ', ''))
+                        REPLACE(telefono, ' ', '')  AS telefono,
+                        timestamp                   AS ultima_actividad,
+                        content                     AS ultimo_mensaje,
+                        role                        AS ultimo_rol,
+                        COUNT(*) OVER (PARTITION BY REPLACE(telefono, ' ', '')) AS total_mensajes
                     FROM mensajes
-                    ORDER BY telefono, timestamp DESC
+                    ORDER BY REPLACE(telefono, ' ', ''), timestamp DESC
                 ) latest
                 ORDER BY ultima_actividad DESC
                 LIMIT 50
@@ -388,7 +388,7 @@ async def api_debug_tables():
         # Últimas 5 filas de mensajes para verificar formato de timestamp y teléfono
         try:
             muestra = await conn.fetch(
-                "SELECT telefono, role, timestamp FROM mensajes ORDER BY timestamp DESC LIMIT 5"
+                "SELECT REPLACE(telefono, ' ', '') AS telefono, role, timestamp FROM mensajes ORDER BY timestamp DESC LIMIT 5"
             )
             counts["mensajes_muestra"] = [
                 {"tel": r["telefono"], "role": r["role"], "ts": str(r["timestamp"])}
@@ -411,7 +411,7 @@ async def api_debug_conversations():
 
             # Paso 1: las primeras 5 filas crudas de mensajes
             muestra_raw = await conn.fetch(
-                "SELECT telefono, role, content, timestamp FROM mensajes ORDER BY timestamp DESC LIMIT 5"
+                "SELECT REPLACE(telefono, ' ', '') AS telefono, role, content, timestamp FROM mensajes ORDER BY timestamp DESC LIMIT 5"
             )
             paso1 = [{"tel": r["telefono"], "role": r["role"], "ts": str(r["timestamp"]),
                       "content_start": str(r["content"])[:40]} for r in muestra_raw]
@@ -419,11 +419,12 @@ async def api_debug_conversations():
             # Paso 2: probar el DISTINCT ON directamente
             try:
                 distinct_rows = await conn.fetch("""
-                    SELECT DISTINCT ON (telefono)
-                        telefono, timestamp AS ts, role,
-                        COUNT(*) OVER (PARTITION BY telefono) AS cnt
+                    SELECT DISTINCT ON (REPLACE(telefono, ' ', ''))
+                        REPLACE(telefono, ' ', '') AS telefono,
+                        timestamp AS ts, role,
+                        COUNT(*) OVER (PARTITION BY REPLACE(telefono, ' ', '')) AS cnt
                     FROM mensajes
-                    ORDER BY telefono, timestamp DESC
+                    ORDER BY REPLACE(telefono, ' ', ''), timestamp DESC
                 """)
                 paso2 = [{"tel": r["telefono"], "ts": str(r["ts"]), "role": r["role"],
                           "cnt": int(r["cnt"])} for r in distinct_rows]
@@ -451,12 +452,12 @@ async def api_debug_conversations():
 @router.get("/api/chat/{telefono}")
 async def api_chat_historial(telefono: str):
     """Retorna el historial completo de mensajes de un contacto."""
-    tel = telefono.lstrip("+")
+    tel = telefono.replace(" ", "").strip().lstrip("+")
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             filas = await conn.fetch(
-                "SELECT role, content, timestamp FROM mensajes WHERE telefono = $1 ORDER BY timestamp ASC",
+                "SELECT role, content, timestamp FROM mensajes WHERE REPLACE(telefono, ' ', '') = $1 ORDER BY timestamp ASC",
                 tel
             )
         mensajes = [

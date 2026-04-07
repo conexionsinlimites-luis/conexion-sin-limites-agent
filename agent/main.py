@@ -139,6 +139,9 @@ async def webhook_handler(request: Request):
         return {"status": "ok"}
 
     for msg in mensajes:
+        # Normalizar teléfono: eliminar espacios del webhook antes de cualquier INSERT o query
+        msg.telefono = msg.telefono.replace(" ", "").strip()
+
         if msg.es_propio or (not msg.texto and not msg.audio_id):
             _log("INFO", f"Mensaje ignorado — es_propio={msg.es_propio} texto='{msg.texto}'")
             continue

@@ -94,14 +94,17 @@ ENVIRONMENT = _get(
     default="development",
 ).lower()
 
-# ── Base de datos ──────────────────────────────────────────
+# ── Base de datos PostgreSQL ───────────────────────────────
+# En Railway: configurar DATABASE_URL con la URL interna de PostgreSQL.
+# Formato: postgresql://user:pass@host:5432/db
 DATABASE_URL = _get(
     "DATABASE_URL",
     "URL_BASE_DE_DATOS",
     "URL_DE_BASE_DE_DATOS",
-    default="sqlite+aiosqlite:////app/data/agentkit.db",
+    default="",
 )
 
+# DB_PATH conservado por compatibilidad (ya no se usa con PostgreSQL)
 DB_PATH = _get(
     "DB_PATH",
     "RUTA_BASE_DE_DATOS",

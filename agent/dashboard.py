@@ -11,13 +11,12 @@ Expone tres rutas:
 
 import asyncio
 import json
-import aiosqlite
 from datetime import datetime, date
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from agent.config import DB_PATH as MEMORY_DB_PATH, TELEFONO_OWNER
-from agent.crm import DB_PATH
+from agent.config import TELEFONO_OWNER
+from agent.database import get_pool
 import agent.crm as _crm
 from agent.memory import guardar_mensaje as _guardar_memoria
 
@@ -82,79 +81,60 @@ COLOR_ESTADO = {
 
 @router.get("/api/stats")
 async def api_stats():
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total_leads = await conn.fetchval("SELECT COUNT(*) FROM leads")
 
-        async with db.execute("SELECT COUNT(*) FROM leads") as c:
-            total_leads = (await c.fetchone())[0]
-
-        async with db.execute(
+        leads_calientes = await conn.fetchval(
             "SELECT COUNT(*) FROM leads WHERE estado IN ('caliente','listo_para_cierre')"
-        ) as c:
-            leads_calientes = (await c.fetchone())[0]
-
-        async with db.execute(
+        )
+        leads_cerrados = await conn.fetchval(
             "SELECT COUNT(*) FROM leads WHERE estado = 'cerrado'"
-        ) as c:
-            leads_cerrados = (await c.fetchone())[0]
+        )
+        score_raw = await conn.fetchval(
+            "SELECT ROUND(AVG(score::numeric), 1) FROM leads"
+        )
+        score_promedio = float(score_raw) if score_raw else 0
 
-        async with db.execute(
-            "SELECT ROUND(AVG(score),1) FROM leads"
-        ) as c:
-            score_promedio = (await c.fetchone())[0] or 0
+        rows = await conn.fetch(
+            "SELECT estado, COUNT(*) AS total FROM leads GROUP BY estado ORDER BY total DESC"
+        )
+        por_estado = [
+            {"estado": r["estado"], "total": r["total"], "color": COLOR_ESTADO.get(r["estado"], "#888")}
+            for r in rows
+        ]
 
-        async with db.execute(
-            "SELECT estado, COUNT(*) as total FROM leads GROUP BY estado ORDER BY total DESC"
-        ) as c:
-            rows = await c.fetchall()
-            por_estado = [
-                {"estado": r["estado"], "total": r["total"], "color": COLOR_ESTADO.get(r["estado"], "#888")}
-                for r in rows
-            ]
-
-        async with db.execute(
+        followups_pendientes = await conn.fetchval(
             "SELECT COUNT(*) FROM followup_programado WHERE enviado=0 AND cancelado=0"
-        ) as c:
-            followups_pendientes = (await c.fetchone())[0]
+        )
 
-        hoy = date.today().isoformat()
-        async with db.execute(
-            "SELECT COUNT(*) FROM historial_mensajes WHERE timestamp >= ?", (hoy,)
-        ) as c:
-            mensajes_hoy = (await c.fetchone())[0]
+        hoy_dt = datetime.combine(date.today(), datetime.min.time())
+        mensajes_hoy = await conn.fetchval(
+            "SELECT COUNT(*) FROM historial_mensajes WHERE timestamp >= $1", hoy_dt
+        )
 
-        # ── Tasas de conversión por etapa del embudo ───────────────────────────
-        # Leads en modo_humano se excluyen: no aportan señal de conversión propia.
-        async with db.execute("""
+        # Tasas de conversión (excluye modo_humano)
+        r = await conn.fetchrow("""
             SELECT
               COUNT(CASE WHEN estado IN (
                 'contactado','interesado','tibio','caliente',
                 'direccion_obtenida','listo_para_cierre','cerrado'
               ) THEN 1 END) AS n_contactado,
-
               COUNT(CASE WHEN estado IN (
                 'interesado','tibio','caliente',
                 'direccion_obtenida','listo_para_cierre','cerrado'
               ) THEN 1 END) AS n_interesado,
-
               COUNT(CASE WHEN estado IN (
                 'caliente','direccion_obtenida','listo_para_cierre','cerrado'
               ) THEN 1 END) AS n_caliente,
-
-              COUNT(CASE WHEN estado IN (
-                'listo_para_cierre','cerrado'
-              ) THEN 1 END) AS n_cierre,
-
+              COUNT(CASE WHEN estado IN ('listo_para_cierre','cerrado') THEN 1 END) AS n_cierre,
               COUNT(CASE WHEN estado = 'cerrado' THEN 1 END) AS n_cerrado
-            FROM leads
-            WHERE estado != 'modo_humano'
-        """) as c:
-            r = await c.fetchone()
-            n_contactado = r[0] or 0
-            n_interesado = r[1] or 0
-            n_caliente   = r[2] or 0
-            n_cierre     = r[3] or 0
-            n_cerrado    = r[4] or 0
+            FROM leads WHERE estado != 'modo_humano'
+        """)
+        n_contactado = r["n_contactado"] or 0
+        n_interesado = r["n_interesado"] or 0
+        n_caliente   = r["n_caliente"]   or 0
+        n_cierre     = r["n_cierre"]     or 0
 
         def tasa(num, den):
             return round(num / den * 100, 1) if den else 0
@@ -162,21 +142,18 @@ async def api_stats():
         conversion = {
             "contactado_interesado": {
                 "label": "Contactado → Interesado",
-                "pct":   tasa(n_interesado, n_contactado),
-                "num":   n_interesado,
-                "den":   n_contactado,
+                "pct": tasa(n_interesado, n_contactado),
+                "num": n_interesado, "den": n_contactado,
             },
             "interesado_caliente": {
                 "label": "Interesado → Caliente",
-                "pct":   tasa(n_caliente, n_interesado),
-                "num":   n_caliente,
-                "den":   n_interesado,
+                "pct": tasa(n_caliente, n_interesado),
+                "num": n_caliente, "den": n_interesado,
             },
             "caliente_cierre": {
                 "label": "Caliente → Cierre",
-                "pct":   tasa(n_cierre, n_caliente),
-                "num":   n_cierre,
-                "den":   n_caliente,
+                "pct": tasa(n_cierre, n_caliente),
+                "num": n_cierre, "den": n_caliente,
             },
         }
 
@@ -197,30 +174,29 @@ async def api_stats():
 
 @router.get("/api/leads")
 async def api_leads():
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
             SELECT nombre, telefono, estado, score, subproducto,
                    ultima_interaccion, objeciones, lead_resumen
             FROM leads
             ORDER BY ultima_interaccion DESC
             LIMIT 20
-        """) as c:
-            rows = await c.fetchall()
-            leads = [
-                {
-                    "nombre":             r["nombre"] or "Desconocido",
-                    "telefono":           r["telefono"],
-                    "estado":             r["estado"],
-                    "score":              r["score"],
-                    "subproducto":        r["subproducto"] or "—",
-                    "ultima_interaccion": r["ultima_interaccion"],
-                    "color":              COLOR_ESTADO.get(r["estado"], "#888"),
-                    "prioridad":          calcular_prioridad(r["estado"], r["score"] or 0),
-                    "resumen":            r["lead_resumen"] or "",
-                }
-                for r in rows
-            ]
+        """)
+        leads = [
+            {
+                "nombre":             r["nombre"] or "Desconocido",
+                "telefono":           r["telefono"],
+                "estado":             r["estado"],
+                "score":              r["score"],
+                "subproducto":        r["subproducto"] or "—",
+                "ultima_interaccion": str(r["ultima_interaccion"]),
+                "color":              COLOR_ESTADO.get(r["estado"], "#888"),
+                "prioridad":          calcular_prioridad(r["estado"], r["score"] or 0),
+                "resumen":            r["lead_resumen"] or "",
+            }
+            for r in rows
+        ]
     return JSONResponse({"leads": leads})
 
 
@@ -230,23 +206,22 @@ async def api_leads():
 async def tomar_lead(telefono: str):
     """Activa modo_humano: pausa las respuestas de Valentina y cancela follow-ups."""
     nombre = "Cliente"
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT nombre FROM leads WHERE telefono = ?", (telefono,)
-        ) as c:
-            row = await c.fetchone()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT nombre FROM leads WHERE telefono = $1", telefono
+            )
             if row and row["nombre"]:
                 nombre = row["nombre"]
-        await db.execute(
-            "UPDATE leads SET estado = 'modo_humano', ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?",
-            (telefono,)
-        )
-        await db.execute(
-            "UPDATE followup_programado SET cancelado = 1 WHERE telefono = ? AND enviado = 0 AND cancelado = 0",
-            (telefono,)
-        )
-        await db.commit()
+            await conn.execute(
+                "UPDATE leads SET estado = 'modo_humano', ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = $1",
+                telefono
+            )
+            await conn.execute(
+                "UPDATE followup_programado SET cancelado = 1 WHERE telefono = $1 AND enviado = 0 AND cancelado = 0",
+                telefono
+            )
     await broadcast_event({"type": "mode_change", "telefono": telefono, "modo_humano": True})
 
     # Notificar al dueño por WhatsApp que tomó el control de este lead
@@ -271,12 +246,12 @@ async def tomar_lead(telefono: str):
 @router.post("/api/leads/{telefono}/liberar")
 async def liberar_lead(telefono: str):
     """Desactiva modo_humano: devuelve el lead a seguimiento para que Valentina retome."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE leads SET estado = 'seguimiento', ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = ?",
-            (telefono,)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE leads SET estado = 'seguimiento', ultima_interaccion = CURRENT_TIMESTAMP WHERE telefono = $1",
+            telefono
         )
-        await db.commit()
     await broadcast_event({"type": "mode_change", "telefono": telefono, "modo_humano": False})
     return JSONResponse({"ok": True, "telefono": telefono, "estado": "seguimiento"})
 
@@ -319,10 +294,10 @@ async def sse_events(request: Request):
 @router.get("/api/conversations")
 async def api_conversations():
     """Lista de conversaciones ordenada por última actividad, máx. 50."""
-    # 1) leer contactos únicos desde la DB de memoria (agentkit.db)
-    async with aiosqlite.connect(MEMORY_DB_PATH) as mem_db:
-        mem_db.row_factory = aiosqlite.Row
-        async with mem_db.execute("""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # 1) Contactos únicos desde la tabla mensajes (memoria IA)
+        filas_mem = await conn.fetch("""
             SELECT
                 telefono,
                 MAX(timestamp)  AS ultima_actividad,
@@ -337,32 +312,26 @@ async def api_conversations():
             GROUP BY telefono
             ORDER BY ultima_actividad DESC
             LIMIT 50
-        """) as c:
-            filas_mem = await c.fetchall()
+        """)
 
-    if not filas_mem:
-        return JSONResponse({"conversaciones": []})
+        if not filas_mem:
+            return JSONResponse({"conversaciones": []})
 
-    telefonos = [f["telefono"] for f in filas_mem]
+        telefonos = [f["telefono"] for f in filas_mem]
 
-    # 2) enriquecer con datos del CRM (valentina_crm.db)
-    info_lead: dict[str, dict] = {}
-    async with aiosqlite.connect(DB_PATH) as crm_db:
-        crm_db.row_factory = aiosqlite.Row
-        ph = ",".join("?" * len(telefonos))
-        async with crm_db.execute(
-            f"SELECT telefono, nombre, estado, score FROM leads WHERE telefono IN ({ph})",
-            telefonos,
-        ) as c:
-            for row in await c.fetchall():
-                info_lead[row["telefono"]] = dict(row)
+        # 2) Enriquecer con datos del CRM (misma DB PostgreSQL)
+        crm_rows = await conn.fetch(
+            "SELECT telefono, nombre, estado, score FROM leads WHERE telefono = ANY($1)",
+            telefonos
+        )
+        info_lead = {r["telefono"]: dict(r) for r in crm_rows}
 
     conversaciones = []
     for f in filas_mem:
         tel = f["telefono"]
         lead = info_lead.get(tel, {})
         estado = lead.get("estado") or "nuevo"
-        score = lead.get("score") or 0
+        score  = lead.get("score") or 0
         _n = (lead.get("nombre") or "").strip()
         _nombre = _n if (_n and _n.lower() not in ("desconocido", "cliente", "unknown", "")) else tel
         conversaciones.append({
@@ -387,15 +356,13 @@ async def api_conversations():
 @router.get("/api/chat/{telefono}")
 async def api_chat_historial(telefono: str):
     """Retorna el historial completo de mensajes de un contacto."""
-    tel = telefono.lstrip("+")          # normalizar: quitar + si viene en la URL
-    async with aiosqlite.connect(MEMORY_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT role, content, timestamp FROM mensajes WHERE telefono = ? ORDER BY timestamp ASC",
-            (tel,),
-        ) as c:
-            filas = await c.fetchall()
-
+    tel = telefono.lstrip("+")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        filas = await conn.fetch(
+            "SELECT role, content, timestamp FROM mensajes WHERE telefono = $1 ORDER BY timestamp ASC",
+            tel
+        )
     mensajes = [
         {"role": f["role"], "content": f["content"], "timestamp": f["timestamp"]}
         for f in filas
@@ -455,30 +422,29 @@ async def enviar_mensaje_dashboard(telefono: str, request: Request):
 
 @router.get("/api/messages")
 async def api_messages():
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
             SELECT h.telefono, h.rol, h.mensaje, h.timestamp,
                    h.estado_lead, h.intencion_detectada, l.nombre
             FROM historial_mensajes h
             LEFT JOIN leads l ON h.telefono = l.telefono
             ORDER BY h.timestamp DESC
             LIMIT 30
-        """) as c:
-            rows = await c.fetchall()
-            mensajes = []
-            for r in rows:
-                _n = (r["nombre"] or "").strip()
-                _nombre = _n if (_n and _n.lower() not in ("desconocido", "cliente", "unknown", "")) else r["telefono"]
-                mensajes.append({
-                    "telefono":   r["telefono"],
-                    "nombre":     _nombre,
-                    "rol":        r["rol"],
-                    "mensaje":    r["mensaje"][:100] + ("…" if len(r["mensaje"]) > 100 else ""),
-                    "timestamp":  r["timestamp"],
-                    "estado":     r["estado_lead"] or "—",
-                    "intencion":  r["intencion_detectada"] or "—",
-                })
+        """)
+    mensajes = []
+    for r in rows:
+        _n = (r["nombre"] or "").strip()
+        _nombre = _n if (_n and _n.lower() not in ("desconocido", "cliente", "unknown", "")) else r["telefono"]
+        mensajes.append({
+            "telefono":  r["telefono"],
+            "nombre":    _nombre,
+            "rol":       r["rol"],
+            "mensaje":   r["mensaje"][:100] + ("…" if len(r["mensaje"]) > 100 else ""),
+            "timestamp": str(r["timestamp"]),
+            "estado":    r["estado_lead"] or "—",
+            "intencion": r["intencion_detectada"] or "—",
+        })
     return JSONResponse({"mensajes": mensajes})
 
 

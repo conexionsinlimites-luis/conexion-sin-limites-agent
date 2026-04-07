@@ -1,75 +1,63 @@
-# agent/memory.py — Memoria de conversaciones con SQLite
-# Generado por AgentKit
+# agent/memory.py — Memoria de conversaciones con PostgreSQL
+# Conexion Sin Limites
 
 """
 Sistema de memoria del agente. Guarda el historial de conversaciones
-por número de teléfono usando aiosqlite directamente (compatible con Python 3.14+).
+por número de teléfono usando asyncpg + PostgreSQL.
 """
 
-import os
-import aiosqlite
 from datetime import datetime
-from agent.config import DB_PATH
+from agent.database import get_pool
 
 
 async def inicializar_db():
-    """Crea las tablas si no existen."""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
+    """Crea la tabla mensajes si no existe."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS mensajes (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                id        SERIAL PRIMARY KEY,
                 telefono  TEXT NOT NULL,
                 role      TEXT NOT NULL,
                 content   TEXT NOT NULL,
                 timestamp TEXT NOT NULL
             )
         """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_telefono ON mensajes (telefono)")
-        await db.commit()
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mensajes_telefono ON mensajes (telefono)"
+        )
 
 
 async def guardar_mensaje(telefono: str, role: str, content: str):
     """Guarda un mensaje en el historial de conversación."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO mensajes (telefono, role, content, timestamp) VALUES (?, ?, ?, ?)",
-            (telefono, role, content, datetime.utcnow().isoformat())
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO mensajes (telefono, role, content, timestamp) VALUES ($1, $2, $3, $4)",
+            telefono, role, content, datetime.utcnow().isoformat()
         )
-        await db.commit()
 
 
 async def obtener_historial(telefono: str, limite: int = 20) -> list[dict]:
     """
     Recupera los últimos N mensajes de una conversación en orden cronológico.
-
-    Args:
-        telefono: Número de teléfono del cliente
-        limite: Máximo de mensajes a recuperar (default: 20)
-
-    Returns:
-        Lista de diccionarios con role y content
     """
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
             SELECT role, content FROM (
                 SELECT role, content, timestamp
                 FROM mensajes
-                WHERE telefono = ?
+                WHERE telefono = $1
                 ORDER BY timestamp DESC
-                LIMIT ?
-            ) ORDER BY timestamp ASC
-            """,
-            (telefono, limite)
-        ) as cursor:
-            filas = await cursor.fetchall()
-            return [{"role": fila["role"], "content": fila["content"]} for fila in filas]
+                LIMIT $2
+            ) sub ORDER BY timestamp ASC
+        """, telefono, limite)
+        return [{"role": r["role"], "content": r["content"]} for r in rows]
 
 
 async def limpiar_historial(telefono: str):
     """Borra todo el historial de una conversación."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM mensajes WHERE telefono = ?", (telefono,))
-        await db.commit()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM mensajes WHERE telefono = $1", telefono)

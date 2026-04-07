@@ -24,6 +24,7 @@ import agent.crm as crm
 from agent.scheduler import iniciar_scheduler
 from agent.dashboard import router as dashboard_router, broadcast_event
 from agent.make_integration import enviar_a_make
+from agent.database import get_pool, close_pool
 
 # Número del supervisor comercial que recibe alertas
 TELEFONO_SUPERVISOR = "56978016298"
@@ -53,11 +54,12 @@ def _log(nivel: str, mensaje: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Inicializa bases de datos y arranca el scheduler de follow-ups."""
+    """Inicializa el pool PostgreSQL, tablas y el scheduler de follow-ups."""
+    await get_pool()
+    _log("INFO", "Pool PostgreSQL inicializado")
     await inicializar_db()
     await crm.init_db()
-    _log("INFO", "Base de datos inicializada")
-    _log("INFO", "CRM Valentina inicializado")
+    _log("INFO", "Tablas PostgreSQL verificadas")
     _log("INFO", f"Servidor AgentKit en puerto {PORT}")
     _log("INFO", f"Proveedor: {proveedor.__class__.__name__}")
 
@@ -67,12 +69,14 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Cancelar scheduler al apagar el servidor
+    # Apagar: cancelar scheduler y cerrar pool
     tarea_scheduler.cancel()
     try:
         await tarea_scheduler
     except asyncio.CancelledError:
         pass
+    await close_pool()
+    _log("INFO", "Pool PostgreSQL cerrado")
 
 
 app = FastAPI(

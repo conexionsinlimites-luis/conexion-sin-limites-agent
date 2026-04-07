@@ -9,6 +9,7 @@ Funciona con cualquier proveedor (Whapi, Meta, Twilio) gracias a la capa de prov
 import re
 import asyncio
 import logging
+import traceback
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -269,7 +270,7 @@ async def webhook_handler(request: Request):
                 _log("INFO", f"Lead {msg.telefono} marcado como listo_para_cierre en CRM")
 
         except Exception as e:
-            _log("ERROR", f"Error procesando mensaje de {msg.telefono}: {e}")
+            _log("ERROR", f"Error procesando mensaje de {msg.telefono}: {e}\n{traceback.format_exc()}")
 
     return {"status": "ok"}
 

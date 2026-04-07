@@ -1880,7 +1880,7 @@ function conectarSSE() {
       const d = JSON.parse(e.data);
       if (d.type === 'new_message') {
         actualizarConversaciones();
-        if (contactoActivo === d.telefono) {
+        if (contactoActivo && contactoActivo.replace(/\\s/g,'') === d.telefono.replace(/\\s/g,'')) {
           if (!_chatUltimoTS || d.ts > _chatUltimoTS) {
             waAgregarBurbuja(d.role, d.content, d.ts);
             waScrollAbajo();
@@ -1889,12 +1889,19 @@ function conectarSSE() {
         } else { flashConvWA(d.telefono); }
       } else if (d.type === 'mode_change') {
         actualizarConversaciones();
-        if (contactoActivo === d.telefono) renderChatHeader(d.telefono, d.modo_humano);
+        if (contactoActivo && contactoActivo.replace(/\\s/g,'') === d.telefono.replace(/\\s/g,'')) renderChatHeader(d.telefono, d.modo_humano);
       }
     } catch(_) {}
   };
-  _sse.onerror = () => { setTimeout(conectarSSE, 4000); };
+  _sse.onerror = () => { _sse.close(); setTimeout(conectarSSE, 4000); };
 }
+
+// Reconectar SSE cuando el tab vuelve a ser visible (sobrevive redeploy/sleep)
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && (!_sse || _sse.readyState === 2)) {
+    conectarSSE();
+  }
+});
 
 // =========================================================================
 // LIVE CHAT STATE

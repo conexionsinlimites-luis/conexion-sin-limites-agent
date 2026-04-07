@@ -28,6 +28,7 @@ _sse_queues: set[asyncio.Queue] = set()
 
 async def broadcast_event(data: dict):
     """Emite un evento SSE a todos los clientes conectados al Live Chat."""
+    global _sse_queues
     if not _sse_queues:
         return
     payload = json.dumps(data, ensure_ascii=False)

@@ -27,8 +27,8 @@ from agent.dashboard import router as dashboard_router, broadcast_event
 from agent.make_integration import enviar_a_make
 from agent.database import get_pool, close_pool
 
-# Número del supervisor comercial que recibe alertas
-TELEFONO_SUPERVISOR = "56978016298"
+# Número del supervisor comercial que recibe alertas (mismo que TELEFONO_OWNER)
+TELEFONO_SUPERVISOR = TELEFONO_OWNER
 
 # Configuración de logging según entorno
 log_level = logging.DEBUG if ENVIRONMENT == "development" else logging.INFO
@@ -296,49 +296,60 @@ def _calcular_nuevo_estado(estado_actual: str, intencion: str) -> str:
 def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:
     """
     Detecta y extrae el marcador [ALERTA_SUPERVISOR|...] de la respuesta de Valentina.
+    El regex es permisivo: matchea cualquier variante del marcador sin importar
+    el orden ni si faltan campos, para que NUNCA llegue texto crudo al cliente.
     Retorna (respuesta_sin_marcador, datos_alerta_o_None).
     """
-    patron = r'\[ALERTA_SUPERVISOR\|nombre=([^|]*)\|tel=([^|]*)\|dir=([^\]]*)\]'
-    match = re.search(patron, respuesta)
-    if not match:
+    # Match permisivo: cualquier contenido dentro de [ALERTA_SUPERVISOR...]
+    patron_broad = r'\[ALERTA_SUPERVISOR[^\]]*\]'
+    if not re.search(patron_broad, respuesta):
         return respuesta, None
 
+    # Extraer campos por nombre (orden independiente)
+    def _campo(key: str) -> str:
+        m = re.search(rf'{key}=([^|\]]*)', respuesta)
+        return m.group(1).strip() if m else ""
+
     datos = {
-        "nombre": match.group(1).strip(),
-        "tel":    match.group(2).strip(),
-        "dir":    match.group(3).strip(),
+        "nombre": _campo("nombre"),
+        "tel":    _campo("tel"),
+        "dir":    _campo("dir"),
     }
-    respuesta_limpia = re.sub(patron, "", respuesta).strip()
+    respuesta_limpia = re.sub(patron_broad, "", respuesta).strip()
     return respuesta_limpia, datos
 
 
 async def _enviar_notificacion_caliente(telefono_cliente: str):
-    """Avisa al dueño por WhatsApp cuando un lead se vuelve caliente."""
+    """Avisa al supervisor por WhatsApp cuando un lead se vuelve caliente."""
     lead = await crm.obtener_lead(telefono_cliente)
     if not lead:
         return
-    nombre   = lead.get("nombre") or "Cliente"
-    score    = lead.get("score", 0)
-    producto = lead.get("subproducto") or "Telecom"
-    resumen  = lead.get("lead_resumen") or "—"
-    tel      = telefono_cliente.replace("+", "").replace(" ", "").split("@")[0]
-    wa_link  = f"https://wa.me/{tel}"
+    nombre    = lead.get("nombre") or "Cliente"
+    score     = lead.get("score", 0)
+    producto  = lead.get("subproducto") or "Telecom"
+    estado    = (lead.get("estado") or "caliente").upper()
+    direccion = lead.get("direccion") or "pendiente"
+    resumen   = lead.get("lead_resumen") or "—"
+    tel       = telefono_cliente.replace("+", "").replace(" ", "").split("@")[0]
+    wa_link   = f"https://wa.me/{tel}"
 
     mensaje = (
         f"🔥 *LEAD CALIENTE — VALENTINA*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 *{nombre}*\n"
-        f"📱 {wa_link}\n"
-        f"⭐ Score: {score}/100\n"
-        f"📦 {producto}\n"
+        f"📱 +{tel}\n"
+        f"📍 {direccion}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 {producto}  •  ⭐ {score}/100\n"
+        f"🔖 {estado}\n"
         f"📋 _{resumen}_\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Entra al dashboard para tomar el lead."
+        f"💬 {wa_link}"
     )
     try:
-        enviado = await proveedor.enviar_mensaje(TELEFONO_OWNER, mensaje)
+        enviado = await proveedor.enviar_mensaje(TELEFONO_SUPERVISOR, mensaje)
         if enviado:
-            _log("INFO", f"Notif. lead caliente enviada — {nombre} ({tel})")
+            _log("INFO", f"Notif. lead caliente enviada al supervisor — {nombre} ({tel})")
         else:
             _log("ERROR", f"Notif. lead caliente falló para {tel}")
     except Exception as e:

@@ -586,6 +586,123 @@ async def api_messages():
     return JSONResponse({"mensajes": mensajes})
 
 
+# ── API: KPI detail endpoints ────────────────────────────────────────────────
+
+@router.get("/api/kpi/leads")
+async def kpi_leads():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT telefono, nombre, estado, score, subproducto, ultima_interaccion
+            FROM leads ORDER BY ultima_interaccion DESC NULLS LAST
+        """)
+    return JSONResponse({"items": [
+        {"telefono": r["telefono"], "nombre": r["nombre"] or "Desconocido",
+         "estado": r["estado"] or "nuevo", "score": r["score"] or 0,
+         "subproducto": r["subproducto"] or "—",
+         "ts": str(r["ultima_interaccion"]) if r["ultima_interaccion"] else None}
+        for r in rows
+    ]})
+
+
+@router.get("/api/kpi/leads-calientes")
+async def kpi_leads_calientes():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT telefono, nombre, estado, score, direccion, subproducto, ultima_interaccion
+            FROM leads WHERE estado IN ('caliente','listo_para_cierre')
+            ORDER BY score DESC NULLS LAST
+        """)
+    return JSONResponse({"items": [
+        {"telefono": r["telefono"], "nombre": r["nombre"] or "Desconocido",
+         "estado": r["estado"], "score": r["score"] or 0,
+         "direccion": r["direccion"] or "—", "subproducto": r["subproducto"] or "—",
+         "ts": str(r["ultima_interaccion"]) if r["ultima_interaccion"] else None}
+        for r in rows
+    ]})
+
+
+@router.get("/api/kpi/conversiones")
+async def kpi_conversiones():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT telefono, nombre, score, subproducto, ultima_interaccion
+            FROM leads WHERE estado = 'cerrado'
+            ORDER BY ultima_interaccion DESC NULLS LAST
+        """)
+    return JSONResponse({"items": [
+        {"telefono": r["telefono"], "nombre": r["nombre"] or "Desconocido",
+         "score": r["score"] or 0, "subproducto": r["subproducto"] or "—",
+         "ts": str(r["ultima_interaccion"]) if r["ultima_interaccion"] else None}
+        for r in rows
+    ]})
+
+
+@router.get("/api/kpi/top-score")
+async def kpi_top_score():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT telefono, nombre, estado, score, subproducto
+            FROM leads WHERE score IS NOT NULL
+            ORDER BY score DESC NULLS LAST LIMIT 10
+        """)
+        max_score = await conn.fetchval("SELECT MAX(score) FROM leads") or 100
+    return JSONResponse({"items": [
+        {"telefono": r["telefono"], "nombre": r["nombre"] or "Desconocido",
+         "estado": r["estado"] or "nuevo", "score": r["score"] or 0,
+         "subproducto": r["subproducto"] or "—",
+         "pct": round((r["score"] or 0) / max(max_score, 1) * 100)}
+        for r in rows
+    ]})
+
+
+@router.get("/api/kpi/mensajes-hoy")
+async def kpi_mensajes_hoy():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        hoy_dt = datetime.combine(date.today(), datetime.min.time())
+        rows = await conn.fetch("""
+            SELECT h.telefono, h.rol, h.mensaje, h.timestamp, l.nombre
+            FROM historial_mensajes h
+            LEFT JOIN leads l ON h.telefono = l.telefono
+            WHERE h.timestamp >= $1
+            ORDER BY h.timestamp DESC LIMIT 50
+        """, hoy_dt)
+    return JSONResponse({"items": [
+        {"telefono": r["telefono"],
+         "nombre": (r["nombre"] or "").strip() or r["telefono"],
+         "rol": r["rol"], "mensaje": r["mensaje"],
+         "ts": str(r["timestamp"])}
+        for r in rows
+    ]})
+
+
+@router.get("/api/kpi/followups")
+async def kpi_followups():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            rows = await conn.fetch("""
+                SELECT f.telefono, f.tipo, f.mensaje, f.programado_para, l.nombre
+                FROM followup_programado f
+                LEFT JOIN leads l ON f.telefono = l.telefono
+                WHERE f.enviado = 0 AND f.cancelado = 0
+                ORDER BY f.programado_para ASC
+            """)
+        except Exception:
+            rows = []
+    return JSONResponse({"items": [
+        {"telefono": r["telefono"],
+         "nombre": (r["nombre"] or "").strip() or r["telefono"],
+         "tipo": r["tipo"], "mensaje": r["mensaje"],
+         "programado_para": str(r["programado_para"])}
+        for r in rows
+    ]})
+
+
 # ── HTML del dashboard ─────────────────────────────────────────────────────────
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -756,9 +873,17 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     padding: 1.4rem 1.2rem;
     backdrop-filter: blur(12px);
     transition: border-color .25s, box-shadow .25s, transform .2s;
-    cursor: default;
+    cursor: pointer;
     position: relative; overflow: hidden;
   }
+  .kpi-card .kpi-hint {
+    position: absolute; top: .6rem; right: .7rem;
+    font-size: .55rem; color: var(--txt3); opacity: 0;
+    transition: opacity .2s; letter-spacing: .04em;
+    font-family: 'Space Grotesk', sans-serif;
+  }
+  .kpi-card:hover .kpi-hint { opacity: 1; }
+  .kpi-card:active { transform: translateY(0) scale(.98); }
   .kpi-card::before {
     content: '';
     position: absolute; top: 0; left: 0; right: 0; height: 1px;
@@ -1556,32 +1681,38 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <!-- KPIs -->
   <div class="section-label" style="margin-top:1.5rem">Resumen del sistema</div>
   <div class="kpi-grid">
-    <div class="kpi-card primary">
+    <div class="kpi-card primary" onclick="abrirKpiModal('total')">
+      <span class="kpi-hint">ver detalle ›</span>
       <div class="kpi-label">Total Leads</div>
       <div class="kpi-value neon" id="k-total">0</div>
       <div class="kpi-sub">registros activos</div>
     </div>
-    <div class="kpi-card">
+    <div class="kpi-card" onclick="abrirKpiModal('calientes')">
+      <span class="kpi-hint">ver detalle ›</span>
       <div class="kpi-label">Leads Calientes</div>
       <div class="kpi-value red" id="k-hot">0</div>
       <div class="kpi-sub">caliente + listo cierre</div>
     </div>
-    <div class="kpi-card">
+    <div class="kpi-card" onclick="abrirKpiModal('cerrados')">
+      <span class="kpi-hint">ver detalle ›</span>
       <div class="kpi-label">Conversiones</div>
       <div class="kpi-value green" id="k-closed">0</div>
       <div class="kpi-sub">leads cerrados</div>
     </div>
-    <div class="kpi-card">
+    <div class="kpi-card" onclick="abrirKpiModal('score')">
+      <span class="kpi-hint">ver detalle ›</span>
       <div class="kpi-label">Score Promedio</div>
       <div class="kpi-value white" id="k-score">0</div>
       <div class="kpi-sub">sobre 100 pts</div>
     </div>
-    <div class="kpi-card">
+    <div class="kpi-card" onclick="abrirKpiModal('msgs')">
+      <span class="kpi-hint">ver detalle ›</span>
       <div class="kpi-label">Mensajes Hoy</div>
       <div class="kpi-value white" id="k-msgs">0</div>
       <div class="kpi-sub">en historial CRM</div>
     </div>
-    <div class="kpi-card">
+    <div class="kpi-card" onclick="abrirKpiModal('followups')">
+      <span class="kpi-hint">ver detalle ›</span>
       <div class="kpi-label">Follow-ups</div>
       <div class="kpi-value neon" id="k-followups">0</div>
       <div class="kpi-sub">pendientes de envio</div>
@@ -1701,6 +1832,22 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </div><!-- /wa-chat-panel -->
   </div><!-- /wa-layout -->
 </div><!-- /panel-chat -->
+
+<!-- Modal: KPI Detail -->
+<div class="modal-overlay" id="modal-kpi" onclick="if(event.target===this)cerrarKpiModal()">
+  <div class="modal-box" style="max-width:640px">
+    <div class="modal-header">
+      <div>
+        <div id="kpi-modal-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em"></div>
+        <div id="kpi-modal-sub" style="font-size:.65rem;color:var(--txt3);margin-top:.25rem"></div>
+      </div>
+      <button class="modal-close" onclick="cerrarKpiModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div id="kpi-modal-body" class="modal-messages" style="max-height:65vh;gap:.5rem">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</div>
 
 <!-- Modal: Ver chat completo -->
 <div class="modal-overlay" id="modal-chat" onclick="if(event.target===this)cerrarModal()">
@@ -2229,10 +2376,119 @@ function modalBurbuja(role, content, ts) {
 }
 
 // =========================================================================
+// KPI MODALS
+// =========================================================================
+const KPI_CFG = {
+  total:     { title: 'TOTAL LEADS',           sub: 'Todos los registros activos',          url: '/api/kpi/leads' },
+  calientes: { title: 'LEADS CALIENTES',        sub: 'Estado: caliente + listo para cierre', url: '/api/kpi/leads-calientes' },
+  cerrados:  { title: 'CONVERSIONES',           sub: 'Leads cerrados',                       url: '/api/kpi/conversiones' },
+  score:     { title: 'SCORE PROMEDIO',         sub: 'Top 10 leads por puntuaci\u00f3n',     url: '/api/kpi/top-score' },
+  msgs:      { title: 'MENSAJES HOY',           sub: 'Actividad del d\u00eda en CRM',        url: '/api/kpi/mensajes-hoy' },
+  followups: { title: 'FOLLOW-UPS PENDIENTES',  sub: 'Programados y sin enviar',             url: '/api/kpi/followups' },
+};
+const ESTADO_CLR = {
+  nuevo:'#888', contactado:'#00d4ff', interesado:'#7b68ee', tibio:'#ffa500',
+  caliente:'#ff2233', direccion_obtenida:'#00ff88', listo_para_cierre:'#ff2233',
+  cerrado:'#00ff88', modo_humano:'#ffa500',
+};
+function estadoBadge(e) {
+  const c = ESTADO_CLR[e]||'#888';
+  return `<span style="display:inline-block;padding:.12rem .45rem;border-radius:4px;font-size:.55rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:${c}22;color:${c};border:1px solid ${c}44">${e||'—'}</span>`;
+}
+function scoreBadge(s) {
+  s = s||0;
+  const c = s>=70?'var(--red)':s>=40?'var(--orange)':'var(--txt2)';
+  return `<span style="color:${c};font-weight:700;font-size:.9rem">${s}</span><span style="color:var(--txt3);font-size:.58rem">pt</span>`;
+}
+function kpiRow(tel, nombre, left, right) {
+  const st = tel.replace(/['"<>&]/g,'');
+  return `<div style="display:flex;align-items:center;gap:.75rem;padding:.75rem .9rem;background:rgba(255,255,255,.025);border:1px solid var(--border);border-radius:10px;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.04)'" onmouseout="this.style.background='rgba(255,255,255,.025)'">
+  <div style="flex:1;min-width:0">
+    <div style="font-size:.75rem;font-weight:600;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(nombre)}</div>
+    <div style="font-size:.6rem;color:var(--txt3);font-family:monospace;margin-top:.1rem">+${st}</div>
+    <div style="margin-top:.3rem">${left}</div>
+  </div>
+  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:.35rem;flex-shrink:0">
+    ${right}
+    <button onclick="irAlChatDesdeModal('${st}')" style="font-size:.6rem;padding:.22rem .55rem;background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.3);color:var(--neon);border-radius:6px;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.18)'" onmouseout="this.style.background='rgba(0,212,255,.08)'">&#8594; Chat</button>
+  </div>
+</div>`;
+}
+function renderKpiItems(tipo, items) {
+  if (!items || !items.length) return '<div class="empty">Sin registros a\u00fan</div>';
+  if (tipo==='total'||tipo==='calientes'||tipo==='cerrados') {
+    return items.map(it => {
+      const left = estadoBadge(it.estado);
+      const extra = (it.direccion && it.direccion!=='—') ? `<div style="font-size:.58rem;color:var(--txt3);max-width:130px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.direccion)}</div>` : '';
+      return kpiRow(it.telefono, it.nombre, left, scoreBadge(it.score)+extra);
+    }).join('');
+  }
+  if (tipo==='score') {
+    return items.map((it,i) => {
+      const bar = `<div style="margin-top:.3rem"><div style="height:3px;border-radius:2px;background:rgba(255,255,255,.08)"><div style="height:100%;width:${it.pct}%;background:linear-gradient(90deg,var(--neon),var(--red));transition:width .6s .1s ease"></div></div></div>`;
+      return kpiRow(it.telefono, it.nombre, estadoBadge(it.estado)+bar, `<span style="font-size:.65rem;color:var(--txt3)">#${i+1}</span>${scoreBadge(it.score)}`);
+    }).join('');
+  }
+  if (tipo==='msgs') {
+    return items.map(it => {
+      const isBot = it.rol==='assistant';
+      const tag = isBot
+        ? `<span style="font-size:.52rem;color:var(--neon);font-weight:700;letter-spacing:.06em">BOT</span>`
+        : `<span style="font-size:.52rem;color:var(--txt2);font-weight:700;letter-spacing:.06em">USER</span>`;
+      const preview = (it.mensaje||'').slice(0,80)+(it.mensaje&&it.mensaje.length>80?'\u2026':'');
+      const left = `<div style="font-size:.65rem;color:var(--txt2);margin-top:.2rem;line-height:1.4">${esc(preview)}</div>`;
+      return kpiRow(it.telefono, it.nombre, left, tag+`<div style="font-size:.58rem;color:var(--txt3);font-family:monospace">${fmtTime(it.ts)}</div>`);
+    }).join('');
+  }
+  if (tipo==='followups') {
+    return items.map(it => {
+      const tipoBadge = `<span style="display:inline-block;padding:.1rem .42rem;border-radius:4px;font-size:.55rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;background:rgba(255,165,0,.1);color:var(--orange);border:1px solid rgba(255,165,0,.25)">${esc(it.tipo)}</span>`;
+      const preview = (it.mensaje||'').slice(0,70)+(it.mensaje&&it.mensaje.length>70?'\u2026':'');
+      const left = tipoBadge+`<div style="font-size:.63rem;color:var(--txt2);margin-top:.28rem;line-height:1.4">${esc(preview)}</div>`;
+      return kpiRow(it.telefono, it.nombre, left, `<div style="font-size:.58rem;color:var(--txt3);font-family:monospace;text-align:right">${fmtTime(it.programado_para)}</div>`);
+    }).join('');
+  }
+  return '<div class="empty">Tipo desconocido</div>';
+}
+async function abrirKpiModal(tipo) {
+  const cfg = KPI_CFG[tipo]; if (!cfg) return;
+  document.getElementById('kpi-modal-title').textContent = cfg.title;
+  document.getElementById('kpi-modal-sub').textContent   = cfg.sub;
+  const body = document.getElementById('kpi-modal-body');
+  body.innerHTML = '<div class="empty">Cargando\u2026</div>';
+  document.getElementById('modal-kpi').style.display = 'flex';
+  try {
+    const r = await fetch(cfg.url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    body.innerHTML = renderKpiItems(tipo, d.items);
+    // trigger score bar animation
+    if (tipo==='score') setTimeout(()=>{}, 50);
+  } catch(e) {
+    body.innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+  }
+}
+function cerrarKpiModal() { document.getElementById('modal-kpi').style.display = 'none'; }
+function irAlChatDesdeModal(tel) {
+  cerrarKpiModal();
+  const pc  = document.getElementById('panel-chat');
+  const pm  = document.getElementById('panel-metrics');
+  const btn = document.getElementById('btn-live');
+  if (pc.style.display !== 'flex') {
+    pm.style.display = 'none';
+    pc.style.display = 'flex';
+    pc.style.flexDirection = 'column';
+    btn.classList.add('active');
+    actualizarConversaciones();
+  }
+  setTimeout(() => abrirChat(tel), 280);
+}
+
+// =========================================================================
 // INIT
 // =========================================================================
 (function init() {
-  document.addEventListener('keydown', e => { if (e.key==='Escape') cerrarModal(); });
+  document.addEventListener('keydown', e => { if (e.key==='Escape') { cerrarModal(); cerrarKpiModal(); } });
   const input = document.getElementById('wa-input');
   if (input) {
     input.addEventListener('keydown', e => { if (e.key==='Enter'&&!e.shiftKey) { e.preventDefault(); waSend(); } });

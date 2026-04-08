@@ -166,6 +166,8 @@ async def webhook_handler(request: Request):
         try:
             # --- CRM: Registrar lead si es nuevo ---
             await crm.crear_o_actualizar_lead(msg.telefono)
+            # Notificar al dashboard para que refresque el sidebar en tiempo real
+            await broadcast_event({"type": "conversations_update"})
 
             # --- MODO HUMANO: si un agente tomó el lead, Valentina no responde ---
             lead_mode = await crm.obtener_lead(msg.telefono)

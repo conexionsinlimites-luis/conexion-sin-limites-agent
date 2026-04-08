@@ -310,26 +310,26 @@ async def api_conversations():
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            total_en_mensajes = await conn.fetchval("SELECT COUNT(*) FROM mensajes")
-            logger.info(f"[api/conversations] mensajes total={total_en_mensajes}")
+            # Fix 1: contar en historial_mensajes (fuente real), no en mensajes
+            total_en_historial = await conn.fetchval("SELECT COUNT(*) FROM historial_mensajes")
+            logger.info(f"[api/conversations] historial_mensajes total={total_en_historial}")
 
-            if not total_en_mensajes:
-                return JSONResponse({"conversaciones": [], "debug": "tabla mensajes vacía"})
+            if not total_en_historial:
+                return JSONResponse({"conversaciones": [], "debug": "historial_mensajes vacío"})
 
-            # DISTINCT ON: forma idiomática en PostgreSQL para obtener el último
-            # mensaje por teléfono, sin JOINs ni subconsultas correlacionadas.
-            # El ORDER BY (telefono, timestamp DESC) garantiza que DISTINCT ON
-            # conserva la fila con el timestamp más alto de cada grupo.
+            # Fix 2: limpiar @s.whatsapp.net además de espacios con SPLIT_PART
             filas_mem = await conn.fetch("""
                 SELECT * FROM (
-                    SELECT DISTINCT ON (REPLACE(telefono, ' ', ''))
-                        REPLACE(telefono, ' ', '')  AS telefono,
-                        timestamp                   AS ultima_actividad,
-                        mensaje                     AS ultimo_mensaje,
-                        rol                         AS ultimo_rol,
-                        COUNT(*) OVER (PARTITION BY REPLACE(telefono, ' ', '')) AS total_mensajes
+                    SELECT DISTINCT ON (SPLIT_PART(REPLACE(telefono, ' ', ''), '@', 1))
+                        SPLIT_PART(REPLACE(telefono, ' ', ''), '@', 1) AS telefono,
+                        timestamp                                       AS ultima_actividad,
+                        mensaje                                         AS ultimo_mensaje,
+                        rol                                             AS ultimo_rol,
+                        COUNT(*) OVER (
+                            PARTITION BY SPLIT_PART(REPLACE(telefono, ' ', ''), '@', 1)
+                        ) AS total_mensajes
                     FROM historial_mensajes
-                    ORDER BY REPLACE(telefono, ' ', ''), timestamp DESC
+                    ORDER BY SPLIT_PART(REPLACE(telefono, ' ', ''), '@', 1), timestamp DESC
                 ) latest
                 ORDER BY ultima_actividad DESC
                 LIMIT 50
@@ -342,10 +342,13 @@ async def api_conversations():
 
             telefonos = [f["telefono"] for f in filas_mem]
 
-            crm_rows = await conn.fetch(
-                "SELECT telefono, nombre, estado, score FROM leads WHERE telefono = ANY($1)",
-                telefonos
-            )
+            # Fix 2b: también normalizar teléfono en leads para el lookup
+            crm_rows = await conn.fetch("""
+                SELECT SPLIT_PART(REPLACE(telefono, ' ', ''), '@', 1) AS telefono,
+                       nombre, estado, score
+                FROM leads
+                WHERE SPLIT_PART(REPLACE(telefono, ' ', ''), '@', 1) = ANY($1)
+            """, telefonos)
             logger.info(f"[api/conversations] leads CRM={len(crm_rows)}")
             info_lead = {r["telefono"]: dict(r) for r in crm_rows}
 
@@ -1919,6 +1922,8 @@ function conectarSSE() {
             _chatUltimoTS = d.ts;
           }
         } else { flashConvWA(d.telefono); }
+      } else if (d.type === 'conversations_update') {
+        actualizarConversaciones();
       } else if (d.type === 'mode_change') {
         actualizarConversaciones();
         if (contactoActivo && contactoActivo.replace(/\\s/g,'') === d.telefono.replace(/\\s/g,'')) renderChatHeader(d.telefono, d.modo_humano);

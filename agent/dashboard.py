@@ -108,9 +108,12 @@ async def api_stats():
             for r in rows
         ]
 
-        followups_pendientes = await conn.fetchval(
-            "SELECT COUNT(*) FROM followup_programado WHERE enviado=0 AND cancelado=0"
-        )
+        try:
+            followups_pendientes = await conn.fetchval(
+                "SELECT COUNT(*) FROM followup_programado WHERE enviado=0 AND cancelado=0"
+            ) or 0
+        except Exception:
+            followups_pendientes = 0
 
         hoy_dt = datetime.combine(date.today(), datetime.min.time())
         mensajes_hoy = await conn.fetchval(
@@ -411,6 +414,27 @@ async def api_debug_tables():
 
     logger.info(f"[debug/tables] {counts}")
     return JSONResponse(counts)
+
+
+@router.get("/api/debug/leads")
+async def api_debug_leads():
+    """Muestra todos los leads en la tabla leads para diagnóstico."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT telefono, nombre, estado, score, ultima_interaccion FROM leads ORDER BY ultima_interaccion DESC LIMIT 20"
+        )
+        leads = [
+            {
+                "telefono": r["telefono"],
+                "nombre": r["nombre"],
+                "estado": r["estado"],
+                "score": r["score"],
+                "ultima_interaccion": str(r["ultima_interaccion"]) if r["ultima_interaccion"] else None,
+            }
+            for r in rows
+        ]
+    return JSONResponse({"total": len(leads), "leads": leads})
 
 
 @router.get("/api/debug/conversations")
@@ -1833,16 +1857,31 @@ function toggleLive() {
 // METRICS
 // =========================================================================
 async function actualizarStats() {
-  const r = await fetch('/api/stats'); const d = await r.json();
-  document.getElementById('k-total').textContent     = d.total_leads;
-  document.getElementById('k-hot').textContent       = d.leads_calientes;
-  document.getElementById('k-closed').textContent    = d.leads_cerrados;
-  document.getElementById('k-score').textContent     = d.score_promedio;
-  document.getElementById('k-msgs').textContent      = d.mensajes_hoy;
-  document.getElementById('k-followups').textContent = d.followups_pendientes;
-  document.getElementById('last-update').textContent = d.actualizado;
-  initChart(d.por_estado.map(e=>e.estado), d.por_estado.map(e=>e.total), d.por_estado.map(e=>e.color));
-  renderEmbudo(d.conversion);
+  try {
+    const r = await fetch('/api/stats');
+    if (!r.ok) {
+      const txt = await r.text();
+      console.error('api/stats error', r.status, txt);
+      document.getElementById('last-update').textContent = 'ERR ' + r.status;
+      return;
+    }
+    const d = await r.json();
+    console.log('api/stats:', d);
+    document.getElementById('k-total').textContent     = d.total_leads    ?? '?';
+    document.getElementById('k-hot').textContent       = d.leads_calientes ?? '?';
+    document.getElementById('k-closed').textContent    = d.leads_cerrados  ?? '?';
+    document.getElementById('k-score').textContent     = d.score_promedio  ?? '?';
+    document.getElementById('k-msgs').textContent      = d.mensajes_hoy    ?? '?';
+    document.getElementById('k-followups').textContent = d.followups_pendientes ?? '?';
+    document.getElementById('last-update').textContent = d.actualizado;
+    if (d.por_estado && d.por_estado.length) {
+      initChart(d.por_estado.map(e=>e.estado), d.por_estado.map(e=>e.total), d.por_estado.map(e=>e.color));
+    }
+    renderEmbudo(d.conversion);
+  } catch(e) {
+    console.error('actualizarStats excepción:', e);
+    document.getElementById('last-update').textContent = 'ERR JS';
+  }
 }
 function renderEmbudo(conv) {
   if (!conv) return;

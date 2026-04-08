@@ -1772,7 +1772,7 @@ function initChart(labels, data, colors) {
 function esc(str) {
   return String(str||'')
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;').replace(/\n/g,'<br>');
+    .replace(/"/g,'&quot;').replace(/\\n/g,'<br>');
 }
 function fmtTime(ts) {
   if (!ts) return '\u2014';

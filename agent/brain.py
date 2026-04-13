@@ -45,7 +45,12 @@ def obtener_mensaje_fallback() -> str:
     return config.get("fallback_message", "Disculpa, no entendí tu mensaje. ¿Podrías reformularlo?")
 
 
-async def generar_respuesta(mensaje: str, historial: list[dict], nombre_cliente: str = None) -> str:
+async def generar_respuesta(
+    mensaje: str,
+    historial: list[dict],
+    nombre_cliente: str = None,
+    nombre_recien_capturado: bool = False,
+) -> str:
     """
     Genera una respuesta usando Claude API.
 
@@ -53,6 +58,7 @@ async def generar_respuesta(mensaje: str, historial: list[dict], nombre_cliente:
         mensaje: El mensaje nuevo del usuario
         historial: Lista de mensajes anteriores [{"role": "user/assistant", "content": "..."}]
         nombre_cliente: Nombre del cliente si ya fue capturado (None = aún desconocido)
+        nombre_recien_capturado: True si el nombre se detectó por primera vez en ESTE mensaje
 
     Returns:
         La respuesta generada por Claude
@@ -67,14 +73,28 @@ async def generar_respuesta(mensaje: str, historial: list[dict], nombre_cliente:
     INVALIDOS = {"", "desconocido", "none", "null", "cliente", "unknown"}
     nombre_valido = nombre_cliente and nombre_cliente.strip().lower() not in INVALIDOS
     if nombre_valido:
-        system_prompt += (
-            f"\n\n─────────────────────────────────────────────\n"
-            f"CONTEXTO SESIÓN ACTUAL\n"
-            f"Nombre del cliente: {nombre_cliente}\n"
-            f"→ Úsalo naturalmente en la conversación cuando corresponda.\n"
-            f"→ NO vuelvas a preguntar el nombre.\n"
-            f"─────────────────────────────────────────────"
-        )
+        if nombre_recien_capturado:
+            # El cliente acaba de decir su nombre en ESTE mensaje — usarlo de inmediato
+            system_prompt += (
+                f"\n\n─────────────────────────────────────────────\n"
+                f"CONTEXTO SESIÓN ACTUAL\n"
+                f"Nombre del cliente: {nombre_cliente}\n"
+                f"⚡ ACABA de decir su nombre por primera vez en este mensaje.\n"
+                f"→ Úsalo de forma inmediata y cálida en tu respuesta.\n"
+                f"→ Ejemplo natural: '¡Qué gusto, {nombre_cliente}! ...' o\n"
+                f"   simplemente intégralo: '{nombre_cliente}, ...' al inicio.\n"
+                f"→ No exageres — solo incorpóralo con naturalidad.\n"
+                f"─────────────────────────────────────────────"
+            )
+        else:
+            system_prompt += (
+                f"\n\n─────────────────────────────────────────────\n"
+                f"CONTEXTO SESIÓN ACTUAL\n"
+                f"Nombre del cliente: {nombre_cliente}\n"
+                f"→ Úsalo naturalmente en la conversación cuando corresponda.\n"
+                f"→ NO vuelvas a preguntar el nombre.\n"
+                f"─────────────────────────────────────────────"
+            )
     else:
         num_mensajes = len(historial)
         if num_mensajes >= 2:

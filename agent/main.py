@@ -183,10 +183,11 @@ async def webhook_handler(request: Request):
                 continue
 
             # --- NOMBRE: extraer del mensaje y guardar si aún no hay nombre válido ---
+            nombre_recien_capturado = False
             nombre_extraido = crm.extraer_nombre_de_mensaje(msg.texto)
             if nombre_extraido:
-                actualizado = await crm.actualizar_nombre_si_desconocido(msg.telefono, nombre_extraido)
-                if actualizado:
+                nombre_recien_capturado = await crm.actualizar_nombre_si_desconocido(msg.telefono, nombre_extraido)
+                if nombre_recien_capturado:
                     _log("INFO", f"Nombre capturado para {msg.telefono}: {nombre_extraido}")
 
             await crm.cancelar_followups(msg.telefono)
@@ -234,7 +235,7 @@ async def webhook_handler(request: Request):
             _log("INFO", f"Historial recuperado: {len(historial)} mensajes previos")
 
             nombre_cliente = (lead_ref.get("nombre") or "") if lead_ref else ""
-            respuesta = await generar_respuesta(msg.texto, historial, nombre_cliente)
+            respuesta = await generar_respuesta(msg.texto, historial, nombre_cliente, nombre_recien_capturado)
             _log("INFO", f"Respuesta generada: '{respuesta[:100]}'")
 
             # Detectar marcador de alerta al supervisor y procesarlo antes de enviar al cliente

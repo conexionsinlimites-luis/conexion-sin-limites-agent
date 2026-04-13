@@ -362,26 +362,40 @@ def clasificar_lead(score: int) -> str:
 
 
 def extraer_nombre_de_mensaje(mensaje: str) -> str | None:
+    """
+    Intenta extraer el nombre del cliente del texto de su mensaje.
+    Cubre: "me llamo X", "soy X", "te habla X", "acá X", respuesta
+    directa de solo-nombre, y nombre+emoji al final.
+    """
     EXCLUIDAS = {
         "bien", "mal", "aqui", "aquí", "solo", "sola", "yo", "tu", "él", "ella",
         "un", "una", "el", "la", "de", "del", "por", "para", "con", "sin",
         "cliente", "persona", "alguien", "nadie", "nuevo", "nueva",
+        "buenas", "buenos", "hola", "chao", "gracias", "listo", "claro",
+        "dale", "ok", "oka", "oki", "okey", "perfecto", "entendido",
     }
     patrones = [
         r"me llamo\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)",
         r"mi nombre es\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)",
-        r"soy\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)",
+        r"(?:^|\s)soy\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)(?:\s|$|,|\.)",
         r"llámame\s+([a-záéíóúüñ]+)",
         r"puedes llamarme\s+([a-záéíóúüñ]+)",
+        r"te habla\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)",
+        r"habla\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)(?:\s|$)",
+        r"^(?:acá|aquí|aqui)\s+([a-záéíóúüñ]+(?:\s+[a-záéíóúüñ]+)?)",
         r"^([a-záéíóúüñ]{3,}(?:\s+[a-záéíóúüñ]{3,})?)\s*(?:aqui|aquí|presente|👋)?$",
     ]
     texto = mensaje.lower().strip()
+    # Versión limpia: quita emojis y puntuación final para capturar "Pedro 😊" o "María!"
+    texto_limpio = re.sub(r'[^a-záéíóúüñ\s]+$', '', texto, flags=re.IGNORECASE).strip()
+
     for patron in patrones:
-        match = re.search(patron, texto, re.IGNORECASE)
-        if match:
-            nombre = match.group(1).strip().title()
-            if nombre.lower() not in EXCLUIDAS and len(nombre) >= 3:
-                return nombre
+        for t in ([texto, texto_limpio] if texto_limpio != texto else [texto]):
+            match = re.search(patron, t, re.IGNORECASE)
+            if match:
+                nombre = match.group(1).strip().title()
+                if nombre.lower() not in EXCLUIDAS and len(nombre) >= 3:
+                    return nombre
     return None
 
 

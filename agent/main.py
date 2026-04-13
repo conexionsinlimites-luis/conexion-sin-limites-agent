@@ -195,7 +195,7 @@ async def webhook_handler(request: Request):
             intencion = crm.detectar_intencion(msg.texto)
             objecion  = crm.detectar_objecion(msg.texto)
 
-            await crm.actualizar_score(msg.telefono, intencion)
+            await crm.actualizar_score(msg.telefono, intencion, msg.texto)
             if objecion:
                 await crm.guardar_objecion(msg.telefono, objecion)
                 _log("INFO", f"Objecion detectada en {msg.telefono}: {objecion}")

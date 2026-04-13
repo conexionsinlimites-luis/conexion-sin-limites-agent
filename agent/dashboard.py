@@ -1552,11 +1552,13 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     font-size: .9rem; font-weight: 700; font-family: 'Space Grotesk', sans-serif;
   }
   .wa-conv-info { flex: 1; min-width: 0; }
-  .wa-conv-name-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .2rem; }
-  .wa-conv-name { font-size: .84rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 165px; }
+  .wa-conv-name-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .2rem; gap: .25rem; }
+  .wa-conv-priority { font-size: .75rem; flex-shrink: 0; line-height: 1; }
+  .wa-conv-name { font-size: .84rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
   .wa-conv-time { font-size: .6rem; color: var(--txt3); font-family: monospace; flex-shrink: 0; }
   .wa-conv-preview-row { display: flex; align-items: center; gap: .4rem; }
   .wa-conv-preview { font-size: .72rem; color: var(--txt2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .wa-conv-score { font-size: .6rem; font-family: 'Orbitron', monospace; font-weight: 700; flex-shrink: 0; }
   .wa-conv-badges { display: flex; gap: .3rem; align-items: center; flex-shrink: 0; }
 
   /* Chat panel */
@@ -2240,13 +2242,16 @@ function renderConvList() {
     return;
   }
   el.innerHTML = lista.map(c => {
-    const activo  = c.telefono===contactoActivo?' active':'';
-    const nombre  = c.nombre||c.telefono;
-    const inicial = nombre.replace(/[^a-zA-Z0-9]/g,'').charAt(0).toUpperCase()||'#';
-    const color   = avatarColor(c.telefono);
-    const safeTel = c.telefono.replace(/['"<>&]/g,'');
-    const preview = (c.ultimo_rol==='assistant'?'\u21A9 ':'')+esc((c.ultimo_mensaje||'').slice(0,50));
-    const badge   = c.modo_humano
+    const activo      = c.telefono===contactoActivo?' active':'';
+    const nombre      = c.nombre||c.telefono;
+    const inicial     = nombre.replace(/[^a-zA-Z0-9]/g,'').charAt(0).toUpperCase()||'#';
+    const color       = avatarColor(c.telefono);
+    const safeTel     = c.telefono.replace(/['"<>&]/g,'');
+    const preview     = (c.ultimo_rol==='assistant'?'\u21A9 ':'')+esc((c.ultimo_mensaje||'').slice(0,50));
+    const score       = c.score || 0;
+    const prioridad   = c.prioridad || '\u26AA';
+    const scoreColor  = score>=70?'var(--red)':score>=40?'var(--orange)':'var(--txt3)';
+    const badge       = c.modo_humano
       ? '<span class="modo-badge humano">Humano</span>'
       : '<span class="modo-badge bot">Bot</span>';
     const toggleBtn = c.modo_humano
@@ -2257,12 +2262,13 @@ function renderConvList() {
       <div class="wa-conv-avatar" style="background:${color}22;color:${color};border:1.5px solid ${color}44">${inicial}</div>
       <div class="wa-conv-info">
         <div class="wa-conv-name-row">
+          <span class="wa-conv-priority" title="${score} pts">${prioridad}</span>
           <span class="wa-conv-name" title="${esc(nombre)}">${esc(nombre)}</span>
           <span class="wa-conv-time">${fmtTime(c.ultima_actividad)}</span>
         </div>
         <div class="wa-conv-preview-row">
           <span class="wa-conv-preview">${preview}</span>
-          <span class="wa-conv-badges">${badge}${toggleBtn}</span>
+          <span class="wa-conv-badges"><span class="wa-conv-score" style="color:${scoreColor}">${score}</span>${badge}${toggleBtn}</span>
         </div>
       </div>
     </div>`;
@@ -2311,11 +2317,15 @@ function volverSidebar() {
 function renderChatHeader(telefono, modoHumano) {
   const el = document.getElementById('wa-chat-hdr');
   if (!el) return;
-  const conv   = conversaciones.find(c => c.telefono===telefono);
-  const nombre = conv ? conv.nombre : telefono;
-  const color  = avatarColor(telefono);
-  const inicial= nombre.replace(/[^a-zA-Z0-9]/g,'').charAt(0).toUpperCase()||'#';
-  const safeTel= telefono.replace(/['"<>&]/g,'');
+  const conv      = conversaciones.find(c => c.telefono===telefono);
+  const nombre    = conv ? conv.nombre : telefono;
+  const color     = avatarColor(telefono);
+  const inicial   = nombre.replace(/[^a-zA-Z0-9]/g,'').charAt(0).toUpperCase()||'#';
+  const safeTel   = telefono.replace(/['"<>&]/g,'');
+  const score     = conv ? (conv.score || 0) : 0;
+  const prioridad = conv ? (conv.prioridad || '\u26AA') : '\u26AA';
+  const estado    = conv ? (conv.estado || 'nuevo') : 'nuevo';
+  const scoreColor= score>=70?'#ff4d6d':score>=40?'#f4a261':'#888';
   const hint   = document.getElementById('wa-human-hint');
   const input  = document.getElementById('wa-input');
   const btn    = document.getElementById('wa-send-btn');
@@ -2340,7 +2350,7 @@ function renderChatHeader(telefono, modoHumano) {
     <div class="wa-chat-hdr-avatar" style="background:${color}22;color:${color};border:1.5px solid ${color}55">${inicial}</div>
     <div class="wa-chat-hdr-info">
       <div class="wa-chat-hdr-name">${esc(nombre)}</div>
-      <div class="wa-chat-hdr-sub">+${safeTel}</div>
+      <div class="wa-chat-hdr-sub">${prioridad} ${estado} &middot; <span style="color:${scoreColor};font-weight:700">${score} pts</span> &middot; +${safeTel}</div>
     </div>
     <div class="wa-chat-hdr-actions">${actions}</div>`;
 }

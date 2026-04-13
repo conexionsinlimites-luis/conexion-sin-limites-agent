@@ -49,6 +49,21 @@ SCORE_POR_INTENCION = {
     "baja": 5
 }
 
+# Señales de comportamiento: puntos a sumar (negativo = restar)
+SCORE_COMPORTAMIENTO: dict[str, int] = {
+    "precio_especifico":    20,   # menciona un precio o pregunta el costo exacto
+    "producto_especifico":  15,   # nombra un plan concreto (Movistar 200MB, VTR TV, etc.)
+    "pregunta_instalacion": 25,   # pregunta cuándo o cómo instalan
+    "direccion_mencionada": 30,   # da su dirección o pregunta cobertura por calle
+    "urgencia":             20,   # "urgente", "necesito ya", "esta semana"
+    "comparacion":          10,   # compara con su proveedor actual
+    "familia_menciona":     10,   # "somos X personas", "mi familia", "mi casa"
+    "multi_pregunta":       10,   # hace 2 o más preguntas en el mismo mensaje
+    "rechazo_fuerte":      -30,   # "no me interesa", "no quiero", "no necesito"
+    "ya_tiene_servicio":   -10,   # "ya tengo internet/tv" sin señal de cambio
+    "muy_caro":            -15,   # "muy caro", "no puedo pagar"
+}
+
 LIMITE_MENSAJES_POR_ESTADO = {
     "interesado": 3,
     "tibio": 2
@@ -284,16 +299,58 @@ async def obtener_historial(telefono: str, limite: int = 20) -> list:
 # LEAD SCORING AUTOMÁTICO
 # ═══════════════════════════════════════
 
-async def actualizar_score(telefono: str, intencion: str):
-    """Actualizar score según intención detectada."""
-    puntos = SCORE_POR_INTENCION.get(intencion, 0)
+def puntuar_mensaje(mensaje: str) -> int:
+    """
+    Analiza el texto del cliente y retorna puntos de comportamiento.
+    Señales positivas suman; señales negativas restan. Rango: [-55, +90].
+    """
+    m = mensaje.lower()
+    puntos = 0
+
+    # Señales positivas
+    if re.search(r'\$\s*\d|cuánto cuesta|cuanto cuesta|precio|tarifa|costo|vale|cobran', m):
+        puntos += SCORE_COMPORTAMIENTO["precio_especifico"]
+    if re.search(r'plan\s+\w|movistar|vtr|claro|entel|gtd|mundo\s+pacifico|fibra|coaxial|mbps|megas', m):
+        puntos += SCORE_COMPORTAMIENTO["producto_especifico"]
+    if re.search(r'cuándo instalan|cuando instalan|horario.*instal|visita.*técnico|técnico|instalación|instalar', m):
+        puntos += SCORE_COMPORTAMIENTO["pregunta_instalacion"]
+    if re.search(r'calle|avenida|pasaje|villa|sector|barrio|dirección|cobertura en|llega a|tienen en', m):
+        puntos += SCORE_COMPORTAMIENTO["direccion_mencionada"]
+    if re.search(r'urgente|lo necesito ya|esta semana|cuanto antes|pronto|inmediato|hoy mismo', m):
+        puntos += SCORE_COMPORTAMIENTO["urgencia"]
+    if re.search(r'tengo con|estoy con|actualmente tengo|mi proveedor|me cobran|me están cobrando', m):
+        puntos += SCORE_COMPORTAMIENTO["comparacion"]
+    if re.search(r'somos \d|mi familia|mi esposa|mi pareja|mi marido|mi casa|toda la familia|los niños', m):
+        puntos += SCORE_COMPORTAMIENTO["familia_menciona"]
+    # multi-pregunta: 2+ signos de interrogación o palabras interrogativas seguidas
+    if len(re.findall(r'\?', m)) >= 2 or len(re.findall(r'\b(cuánto|cómo|cuándo|qué|cuál|dónde)\b', m)) >= 2:
+        puntos += SCORE_COMPORTAMIENTO["multi_pregunta"]
+
+    # Señales negativas
+    if re.search(r'no me interesa|no quiero|no necesito|no gracias|dejame|déjame|no por ahora', m):
+        puntos += SCORE_COMPORTAMIENTO["rechazo_fuerte"]
+    if re.search(r'ya tengo|ya cuento con|ya contrato|estoy conforme|no me cambio|quedo con', m):
+        puntos += SCORE_COMPORTAMIENTO["ya_tiene_servicio"]
+    if re.search(r'muy caro|demasiado caro|no puedo pagar|no alcanzo|fuera de mi presupuesto|no me alcanza', m):
+        puntos += SCORE_COMPORTAMIENTO["muy_caro"]
+
+    return puntos
+
+
+async def actualizar_score(telefono: str, intencion: str, mensaje: str = ""):
+    """Actualizar score según intención detectada y señales de comportamiento en el mensaje."""
+    puntos_intencion     = SCORE_POR_INTENCION.get(intencion, 0)
+    puntos_comportamiento = puntuar_mensaje(mensaje) if mensaje else 0
+    puntos_total          = puntos_intencion + puntos_comportamiento
+    if puntos_total == 0:
+        return
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE leads
-            SET score = LEAST(100, score + $1)
+            SET score = GREATEST(0, LEAST(100, score + $1))
             WHERE telefono = $2
-        """, puntos, telefono)
+        """, puntos_total, telefono)
 
 
 def clasificar_lead(score: int) -> str:

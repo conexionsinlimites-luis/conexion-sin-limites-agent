@@ -1882,7 +1882,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         <div class="wa-input-row">
           <div class="wa-human-hint" id="wa-human-hint">&#128163; Modo humano &mdash; enviando directo a WhatsApp</div>
           <div class="wa-input-main">
-            <textarea class="wa-input" id="wa-input" placeholder="Selecciona una conversaci&oacute;n..." rows="1" disabled></textarea>
+            <textarea class="wa-input" id="wa-input" placeholder="Selecciona una conversaci&oacute;n para escribir..." rows="1" disabled></textarea>
             <button class="wa-send-btn" id="wa-send-btn" onclick="waSend()" disabled>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
             </button>
@@ -2321,11 +2321,13 @@ function renderChatHeader(telefono, modoHumano) {
   const btn    = document.getElementById('wa-send-btn');
   if (hint)  hint.style.display  = modoHumano ? 'block' : 'none';
   if (input) {
-    input.disabled = !modoHumano;
+    input.disabled = false;  // siempre habilitado — el dashboard puede enviar en cualquier modo
     input.classList.toggle('modo-humano', modoHumano);
-    input.placeholder = modoHumano ? 'Escribe tu respuesta y presiona Enter...' : 'Toma el lead para responder...';
+    input.placeholder = modoHumano
+      ? 'Modo humano — escribe y presiona Enter...'
+      : 'Mensaje manual (bot sigue activo)...';
   }
-  if (btn) { btn.disabled = !modoHumano; btn.classList.toggle('modo-humano', modoHumano); }
+  if (btn) { btn.disabled = false; btn.classList.toggle('modo-humano', modoHumano); }
   const actions = modoHumano
     ? `<button class="btn-toggle-lead activo" onclick="liberarLeadChat('${safeTel}')">
          <span class="btn-toggle-icon">&#9646;&#9646;</span> Liberar IA

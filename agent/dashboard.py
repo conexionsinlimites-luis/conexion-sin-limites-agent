@@ -179,6 +179,124 @@ async def api_stats():
     })
 
 
+# ── API: estadísticas de campañas ─────────────────────────────────────────────
+
+FUNNEL_ORDER = [
+    "nuevo", "contactado", "interesado", "tibio", "caliente",
+    "direccion_obtenida", "listo_para_cierre", "cerrado", "seguimiento",
+]
+
+@router.get("/api/stats/campanas")
+async def api_stats_campanas():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+
+        # ── Embudo por estado en orden de funnel ──────────────────────────────
+        estado_rows = await conn.fetch(
+            "SELECT estado, COUNT(*) AS total FROM leads GROUP BY estado"
+        )
+        conteo = {r["estado"]: r["total"] for r in estado_rows}
+        total_leads = sum(conteo.values()) or 1
+        embudo = [
+            {
+                "estado": e,
+                "total":  conteo.get(e, 0),
+                "pct_total": round(conteo.get(e, 0) / total_leads * 100, 1),
+                "color": COLOR_ESTADO.get(e, "#888"),
+            }
+            for e in FUNNEL_ORDER if conteo.get(e, 0) > 0
+        ]
+
+        # ── Tasa de respuesta a follow-ups ────────────────────────────────────
+        try:
+            fu_rows = await conn.fetch("""
+                WITH enviados AS (
+                    SELECT id, telefono, tipo, programado_para
+                    FROM followup_programado WHERE enviado = 1
+                ),
+                respondidos AS (
+                    SELECT DISTINCT e.id
+                    FROM enviados e
+                    JOIN historial_mensajes hm
+                      ON hm.telefono = e.telefono
+                     AND hm.rol = 'user'
+                     AND hm.timestamp > e.programado_para
+                )
+                SELECT
+                    e.tipo,
+                    COUNT(*)           AS enviados,
+                    COUNT(r.id)        AS respondidos
+                FROM enviados e
+                LEFT JOIN respondidos r ON r.id = e.id
+                GROUP BY e.tipo
+                ORDER BY e.tipo
+            """)
+            tipo_orden = ["2h", "24h", "3d", "30d", "60d"]
+            por_tipo = []
+            total_env = total_resp = 0
+            tipo_data = {r["tipo"]: dict(r) for r in fu_rows}
+            for t in tipo_orden:
+                if t not in tipo_data:
+                    continue
+                td = tipo_data[t]
+                env  = td["enviados"]  or 0
+                resp = td["respondidos"] or 0
+                total_env  += env
+                total_resp += resp
+                por_tipo.append({
+                    "tipo": t,
+                    "enviados":    env,
+                    "respondidos": resp,
+                    "tasa": round(resp / env * 100, 1) if env else 0,
+                })
+            followups = {
+                "total_enviados":    total_env,
+                "total_respondidos": total_resp,
+                "tasa": round(total_resp / total_env * 100, 1) if total_env else 0,
+                "por_tipo": por_tipo,
+            }
+        except Exception:
+            followups = {"total_enviados": 0, "total_respondidos": 0, "tasa": 0, "por_tipo": []}
+
+        # ── Leads por día (últimos 14 días) ───────────────────────────────────
+        dia_rows = await conn.fetch("""
+            SELECT
+                (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago')::date AS dia,
+                COUNT(*) AS total
+            FROM leads
+            WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '14 days'
+            GROUP BY dia
+            ORDER BY dia
+        """)
+        # Completar días sin leads con 0 para que el gráfico no tenga huecos
+        from datetime import timedelta
+        hoy_chile = datetime.now().date()
+        dia_map = {str(r["dia"]): r["total"] for r in dia_rows}
+        leads_por_dia = [
+            {"dia": str(hoy_chile - timedelta(days=13 - i)),
+             "total": dia_map.get(str(hoy_chile - timedelta(days=13 - i)), 0)}
+            for i in range(14)
+        ]
+
+        # ── Top productos de interés ──────────────────────────────────────────
+        prod_rows = await conn.fetch("""
+            SELECT COALESCE(NULLIF(TRIM(subproducto), ''), 'Sin especificar') AS producto,
+                   COUNT(*) AS total
+            FROM leads
+            GROUP BY producto
+            ORDER BY total DESC
+            LIMIT 8
+        """)
+        top_productos = [{"producto": r["producto"], "total": r["total"]} for r in prod_rows]
+
+    return JSONResponse({
+        "embudo":        embudo,
+        "followups":     followups,
+        "leads_por_dia": leads_por_dia,
+        "top_productos": top_productos,
+    })
+
+
 # ── API: leads recientes ───────────────────────────────────────────────────────
 
 @router.get("/api/leads")
@@ -986,6 +1104,32 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   /* ── main grid ── */
   .main-grid { display: grid; grid-template-columns: 1fr 1.65fr; gap: 1.25rem; margin-bottom: 1.25rem; }
   @media(max-width:960px) { .main-grid { grid-template-columns: 1fr; } }
+
+  /* ── campañas grid ── */
+  .campanas-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 2rem; }
+  @media(max-width:960px) { .campanas-grid { grid-template-columns: 1fr; } }
+  .campanas-chart-wrap { position: relative; height: 200px; }
+  .campanas-embudo-row { margin-bottom: .55rem; }
+  .campanas-embudo-label {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: .18rem;
+  }
+  .campanas-embudo-name { font-size: .68rem; color: var(--txt2); text-transform: capitalize; }
+  .campanas-embudo-val  { font-family: 'Orbitron', sans-serif; font-size: .65rem; font-weight: 700; }
+  .campanas-embudo-pct  { font-size: .55rem; color: var(--txt3); margin-left: .2rem; }
+  .campanas-bar-track   { height: 6px; border-radius: 3px; background: rgba(255,255,255,.06); overflow: hidden; }
+  .campanas-bar-fill    { height: 100%; border-radius: 3px; transition: width .7s cubic-bezier(.4,0,.2,1); }
+  .fu-rate-headline     { display: flex; align-items: baseline; gap: .5rem; margin-bottom: 1rem; }
+  .fu-rate-num          { font-family: 'Orbitron', sans-serif; font-size: 2rem; font-weight: 900; line-height: 1; }
+  .fu-rate-sub          { font-size: .68rem; color: var(--txt2); }
+  .fu-tipo-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: .32rem 0; border-bottom: 1px solid rgba(255,255,255,.04);
+    font-size: .68rem;
+  }
+  .fu-tipo-tag  { font-family: 'Orbitron', sans-serif; font-size: .58rem; color: var(--neon); min-width: 2.5rem; }
+  .fu-tipo-cnt  { color: var(--txt2); }
+  .fu-tipo-pct  { font-weight: 700; min-width: 3rem; text-align: right; }
 
   /* ── glass cards ── */
   .card {
@@ -1902,11 +2046,45 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
   <!-- Actividad reciente -->
   <div class="section-label">Actividad reciente</div>
-  <div class="card" style="margin-bottom:2.5rem">
+  <div class="card" style="margin-bottom:2rem">
     <div class="card-title">&#218;ltimos mensajes por contacto</div>
     <div class="msg-card-list" id="msgs-list">
       <div class="empty">Sin datos</div>
     </div>
+  </div>
+
+  <!-- Estadísticas de campañas -->
+  <div class="section-label" style="margin-top:1rem">Estad&iacute;sticas de campa&ntilde;as</div>
+  <div class="campanas-grid">
+
+    <!-- Embudo de estados -->
+    <div class="card">
+      <div class="card-title">Distribuci&oacute;n de estados</div>
+      <div id="campanas-embudo"><div class="empty">Cargando...</div></div>
+    </div>
+
+    <!-- Tasa de respuesta follow-ups -->
+    <div class="card">
+      <div class="card-title">Tasa de respuesta — follow-ups</div>
+      <div id="campanas-followups"><div class="empty">Cargando...</div></div>
+    </div>
+
+    <!-- Leads por día -->
+    <div class="card">
+      <div class="card-title">Leads por d&iacute;a <span style="font-size:.58rem;color:var(--txt3);font-weight:400">(&#250;ltimas 2 semanas)</span></div>
+      <div class="campanas-chart-wrap">
+        <canvas id="chart-leads-dia"></canvas>
+      </div>
+    </div>
+
+    <!-- Top productos -->
+    <div class="card">
+      <div class="card-title">Top productos de inter&eacute;s</div>
+      <div class="campanas-chart-wrap">
+        <canvas id="chart-productos"></canvas>
+      </div>
+    </div>
+
   </div>
 
 </main>
@@ -2315,12 +2493,158 @@ function irAlChat(telefono) {
   }
   setTimeout(() => seleccionarContacto(telefono), 80);
 }
+// =========================================================================
+// ESTADÍSTICAS DE CAMPAÑAS
+// =========================================================================
+const COLOR_ESTADO_JS = {
+  nuevo:'#555555', contactado:'#3498db', interesado:'#9b59b6', tibio:'#e67e22',
+  caliente:'#e74c3c', direccion_obtenida:'#1abc9c', listo_para_cierre:'#c9a227',
+  cerrado:'#2ecc71', seguimiento:'#7f8c8d', modo_humano:'#a855f7',
+};
+let chartLeadsDia = null;
+let chartProductos = null;
+
+async function actualizarCampanas() {
+  try {
+    const r = await fetch('/api/stats/campanas');
+    if (!r.ok) return;
+    const d = await r.json();
+    renderEmbudoCampanas(d.embudo   || []);
+    renderFollowupRate  (d.followups || {});
+    renderChartLeadsDia (d.leads_por_dia || []);
+    renderChartProductos(d.top_productos  || []);
+  } catch(e) { console.error('[Campanas]', e); }
+}
+
+function renderEmbudoCampanas(embudo) {
+  const el = document.getElementById('campanas-embudo');
+  if (!embudo.length) { el.innerHTML = '<div class="empty">Sin datos aún</div>'; return; }
+  const max = Math.max(...embudo.map(e => e.total), 1);
+  el.innerHTML = embudo.map(e => {
+    const pct   = Math.round(e.total / max * 100);
+    const color = e.color || '#888';
+    return `<div class="campanas-embudo-row">
+      <div class="campanas-embudo-label">
+        <span class="campanas-embudo-name">${e.estado}</span>
+        <span class="campanas-embudo-val" style="color:${color}">${e.total}<span class="campanas-embudo-pct">${e.pct_total}%</span></span>
+      </div>
+      <div class="campanas-bar-track">
+        <div class="campanas-bar-fill" style="width:${pct}%;background:${color}"></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderFollowupRate(f) {
+  const el = document.getElementById('campanas-followups');
+  if (!f || !f.total_enviados) {
+    el.innerHTML = '<div class="empty">Aún no se han enviado follow-ups</div>';
+    return;
+  }
+  const tColor = f.tasa >= 50 ? 'var(--green)' : f.tasa >= 25 ? 'var(--orange)' : 'var(--red)';
+  const rows = (f.por_tipo || []).map(t => {
+    const c = t.tasa >= 50 ? 'var(--green)' : t.tasa >= 25 ? 'var(--orange)' : 'var(--txt3)';
+    const barW = Math.round(t.tasa);
+    return `<div class="fu-tipo-row">
+      <span class="fu-tipo-tag">${t.tipo}</span>
+      <div style="flex:1;margin:0 .75rem;height:4px;border-radius:2px;background:rgba(255,255,255,.06)">
+        <div style="height:100%;width:${barW}%;background:${c};border-radius:2px;transition:width .6s ease"></div>
+      </div>
+      <span class="fu-tipo-cnt">${t.respondidos}/${t.enviados}</span>
+      <span class="fu-tipo-pct" style="color:${c}">${t.tasa}%</span>
+    </div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="fu-rate-headline">
+      <span class="fu-rate-num" style="color:${tColor}">${f.tasa}%</span>
+      <span class="fu-rate-sub">${f.total_respondidos} de ${f.total_enviados} respondidos</span>
+    </div>
+    ${rows || '<div style="font-size:.68rem;color:var(--txt3)">Sin datos por tipo todavía</div>'}`;
+}
+
+function renderChartLeadsDia(data) {
+  const ctx = document.getElementById('chart-leads-dia');
+  if (!ctx) return;
+  if (chartLeadsDia) { chartLeadsDia.destroy(); chartLeadsDia = null; }
+  const labels = data.map(d => d.dia.slice(5));  // MM-DD
+  const values = data.map(d => d.total);
+  chartLeadsDia = new Chart(ctx.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: '#00D4FF', backgroundColor: 'rgba(0,212,255,.07)',
+        borderWidth: 2, pointRadius: 3, pointBackgroundColor: '#00D4FF',
+        fill: true, tension: .35,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor:'rgba(0,0,0,.9)', borderColor:'#00D4FF', borderWidth:1,
+          titleColor:'#00D4FF', bodyColor:'#fff',
+          titleFont:{family:'Orbitron',size:9}, bodyFont:{family:'Space Grotesk',size:12}, padding:10 }
+      },
+      scales: {
+        x: { ticks:{color:'rgba(255,255,255,.35)', font:{family:'Space Grotesk',size:8}, maxRotation:45},
+             grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(0,212,255,.15)'} },
+        y: { ticks:{color:'rgba(255,255,255,.4)', font:{size:10}, stepSize:1},
+             grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(0,212,255,.15)'}, beginAtZero:true }
+      }
+    }
+  });
+}
+
+function renderChartProductos(data) {
+  const ctx = document.getElementById('chart-productos');
+  if (!ctx) return;
+  if (chartProductos) { chartProductos.destroy(); chartProductos = null; }
+  if (!data.length) {
+    const wrap = ctx.closest('.campanas-chart-wrap');
+    if (wrap) wrap.innerHTML = '<div class="empty" style="padding-top:3rem">Sin datos de productos</div>';
+    return;
+  }
+  const PROD_COLORS = ['#00D4FF','#c084fc','#f59e0b','#22c55e','#ef4444','#3b82f6','#1abc9c','#e67e22'];
+  const labels = data.map(d => d.producto.length > 22 ? d.producto.slice(0,20)+'\u2026' : d.producto);
+  const values = data.map(d => d.total);
+  chartProductos = new Chart(ctx.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: PROD_COLORS.map(c => c + '22'),
+        borderColor:     PROD_COLORS,
+        borderWidth: 1, borderRadius: 5,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor:'rgba(0,0,0,.9)', borderColor:'rgba(0,212,255,.3)', borderWidth:1,
+          titleColor:'#00D4FF', bodyColor:'#fff',
+          titleFont:{family:'Space Grotesk',size:11}, bodyFont:{family:'Space Grotesk',size:12}, padding:10 }
+      },
+      scales: {
+        x: { ticks:{color:'rgba(255,255,255,.4)', font:{size:10}, stepSize:1},
+             grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(0,212,255,.15)'}, beginAtZero:true },
+        y: { ticks:{color:'rgba(255,255,255,.55)', font:{family:'Space Grotesk',size:9}},
+             grid:{display:false}, border:{display:false} }
+      }
+    }
+  });
+}
+
 async function refresh() {
-  try { await Promise.all([actualizarStats(), actualizarLeads(), actualizarMensajes()]); }
+  try { await Promise.all([actualizarStats(), actualizarLeads(), actualizarMensajes(), actualizarCampanas()]); }
   catch(e) { document.getElementById('last-update').textContent = 'ERROR'; }
 }
 refresh();
-setInterval(refresh, 10_000);
+setInterval(refresh, 30_000);
 
 // =========================================================================
 // SSE

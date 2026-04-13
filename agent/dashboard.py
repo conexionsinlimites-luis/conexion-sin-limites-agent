@@ -10,12 +10,14 @@ Expone tres rutas:
 """
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import traceback
 from datetime import datetime, date
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from agent.config import TELEFONO_OWNER
 from agent.database import get_pool
@@ -185,7 +187,7 @@ async def api_leads():
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT nombre, telefono, estado, score, subproducto,
-                   ultima_interaccion, objeciones, lead_resumen
+                   ultima_interaccion, objeciones, lead_resumen, notas
             FROM leads
             ORDER BY ultima_interaccion DESC
             LIMIT 20
@@ -201,10 +203,73 @@ async def api_leads():
                 "color":              COLOR_ESTADO.get(r["estado"], "#888"),
                 "prioridad":          calcular_prioridad(r["estado"], r["score"] or 0),
                 "resumen":            r["lead_resumen"] or "",
+                "notas":              r["notas"] or "",
             }
             for r in rows
         ]
     return JSONResponse({"leads": leads})
+
+
+# ── API: exportar leads a CSV ──────────────────────────────────────────────────
+
+@router.get("/api/leads/export-csv")
+async def export_leads_csv():
+    """Descarga todos los leads como archivo CSV (compatible con Excel)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT nombre, telefono, estado, score, subproducto,
+                   notas, direccion, comuna,
+                   ultima_interaccion, created_at
+            FROM leads
+            ORDER BY ultima_interaccion DESC NULLS LAST
+        """)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Nombre", "Teléfono", "Estado", "Score", "Producto",
+        "Notas", "Dirección", "Comuna",
+        "Última interacción", "Creado"
+    ])
+    for r in rows:
+        writer.writerow([
+            r["nombre"] or "",
+            r["telefono"] or "",
+            r["estado"] or "",
+            r["score"] if r["score"] is not None else 0,
+            r["subproducto"] or "",
+            r["notas"] or "",
+            r["direccion"] or "",
+            r["comuna"] or "",
+            str(r["ultima_interaccion"]) if r["ultima_interaccion"] else "",
+            str(r["created_at"]) if r["created_at"] else "",
+        ])
+
+    # utf-8-sig incluye BOM para que Excel lo abra sin problemas de tildes
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+    filename = f"leads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── API: guardar notas de un lead ──────────────────────────────────────────────
+
+@router.patch("/api/leads/{telefono}/notas")
+async def actualizar_notas_lead(telefono: str, request: Request):
+    """Actualiza las notas internas de un lead."""
+    body = await request.json()
+    notas = str(body.get("notas", ""))[:2000]  # límite razonable
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE leads SET notas = $1 WHERE telefono = $2",
+            notas, telefono
+        )
+    return JSONResponse({"ok": True})
 
 
 # ── API: tomar / liberar lead (modo humano) ────────────────────────────────────
@@ -956,7 +1021,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .leads-list { display: flex; flex-direction: column; gap: .5rem; max-height: 320px; overflow-y: auto; }
 
   .lead-row {
-    display: grid; grid-template-columns: 1.4rem 1fr auto auto auto;
+    display: grid; grid-template-columns: 1.4rem 1fr auto auto auto auto;
     align-items: center; gap: .75rem;
     background: rgba(255,255,255,0.02);
     border-radius: 10px; padding: .65rem 1rem;
@@ -1271,6 +1336,13 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     transition: opacity .2s; line-height: 1; border-radius: 4px;
   }
   .btn-ver-chat:hover { opacity: 1; background: rgba(0,212,255,0.1); }
+  .btn-notas {
+    background: none; border: none; cursor: pointer;
+    font-size: .85rem; padding: .1rem .2rem; opacity: .3;
+    transition: opacity .2s; line-height: 1; border-radius: 4px;
+  }
+  .btn-notas:hover  { opacity: .9; background: rgba(168,85,247,0.12); }
+  .btn-notas.activo { opacity: .85; }
 
   /* ── Modal: chat completo ── */
   .modal-overlay {
@@ -1363,7 +1435,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
     .leads-list { max-height: 220px; }
     .lead-row   {
-      grid-template-columns: 1.2rem 1fr auto;
+      grid-template-columns: 1.2rem 1fr auto auto;
       gap: .4rem; padding: .55rem .7rem;
     }
     .lead-row .lead-score { display: none; }
@@ -1817,7 +1889,10 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <div class="card-title">Leads recientes</div>
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem">
+        <span>Leads recientes</span>
+        <button onclick="exportarCSV()" id="btn-export-csv" style="background:rgba(0,212,255,.07);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.62rem;font-weight:700;letter-spacing:.06em;padding:.3rem .7rem;border-radius:8px;cursor:pointer;transition:background .15s;white-space:nowrap" onmouseover="this.style.background='rgba(0,212,255,.18)'" onmouseout="this.style.background='rgba(0,212,255,.07)'">&#8659; Exportar CSV</button>
+      </div>
       <div class="leads-list" id="leads-list">
         <div class="empty">Sin datos</div>
       </div>
@@ -1924,6 +1999,31 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </div>
     <div class="modal-messages" id="modal-messages">
       <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Notas del lead -->
+<div class="modal-overlay" id="modal-notas" onclick="if(event.target===this)cerrarNotasModal()">
+  <div class="modal-box" style="max-width:500px">
+    <div class="modal-header">
+      <div>
+        <div id="notas-modal-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">NOTAS</div>
+        <div id="notas-modal-sub" style="font-size:.65rem;color:var(--txt3);margin-top:.25rem">Notas internas — no visibles para el cliente</div>
+      </div>
+      <button class="modal-close" onclick="cerrarNotasModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div style="padding:1.4rem 1.75rem;display:flex;flex-direction:column;gap:1rem">
+      <textarea id="notas-textarea"
+        placeholder="Escribe notas internas sobre este lead&#10;(historial, acuerdos, recordatorios...)"
+        style="width:100%;min-height:160px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:10px;color:var(--txt1);font-family:'Space Grotesk',sans-serif;font-size:.82rem;line-height:1.5;padding:.85rem 1rem;resize:vertical;outline:none;transition:border-color .2s;box-sizing:border-box"
+        onfocus="this.style.borderColor='rgba(0,212,255,.5)'"
+        onblur="this.style.borderColor='var(--border)'"
+      ></textarea>
+      <div style="display:flex;gap:.75rem;justify-content:flex-end">
+        <button onclick="cerrarNotasModal()" style="background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.75rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer">Cancelar</button>
+        <button id="notas-save-btn" onclick="guardarNotas()" style="background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.4);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.75rem;font-weight:700;padding:.5rem 1.4rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.25)'" onmouseout="this.style.background='rgba(0,212,255,.12)'">Guardar notas</button>
+      </div>
     </div>
   </div>
 </div>
@@ -2117,18 +2217,69 @@ async function actualizarLeads() {
   const r = await fetch('/api/leads'); const d = await r.json();
   const el = document.getElementById('leads-list');
   if (!d.leads.length) { el.innerHTML = '<div class="empty">Sin leads registrados</div>'; return; }
-  el.innerHTML = d.leads.map(l => `
+  el.innerHTML = d.leads.map(l => {
+    const safeTel   = l.telefono.replace(/['"<>&]/g, '');
+    const safeNombre = esc(l.nombre);
+    const notasIcon  = l.notas
+      ? `<button class="btn-notas activo" title="Ver/editar notas" onclick="abrirNotasModal('${safeTel}','${safeNombre}',this.dataset.notas)" data-notas="${esc(l.notas)}">&#128221;</button>`
+      : `<button class="btn-notas"        title="Agregar nota"    onclick="abrirNotasModal('${safeTel}','${safeNombre}','')"                                              >&#128221;</button>`;
+    return `
     <div class="lead-row fade-in" style="border-left-color:${l.color};box-shadow:inset 2px 0 8px ${l.color}22">
       <div class="lead-priority" title="${prioridadLabel(l.prioridad)}">${l.prioridad}</div>
       <div style="min-width:0">
-        <div class="lead-name">${l.nombre}</div>
+        <div class="lead-name">${esc(l.nombre)}</div>
         <div class="lead-phone">${l.telefono} &middot; ${l.subproducto}</div>
-        ${l.resumen ? `<div class="lead-resumen" title="${l.resumen}">${l.resumen}</div>` : ''}
+        ${l.resumen ? `<div class="lead-resumen" title="${esc(l.resumen)}">${esc(l.resumen)}</div>` : ''}
       </div>
       ${estadoBadge(l.estado,l.color)}
       <div class="lead-score">${l.score}<span style="font-size:.55rem;opacity:.6">pts</span></div>
+      ${notasIcon}
       ${botonAccion(l)}
-    </div>`).join('');
+    </div>`;
+  }).join('');
+}
+function exportarCSV() {
+  const btn = document.getElementById('btn-export-csv');
+  if (btn) { btn.textContent = '⏳ Descargando...'; btn.disabled = true; }
+  const a = document.createElement('a');
+  a.href = '/api/leads/export-csv';
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => { if (btn) { btn.textContent = '↙ Exportar CSV'; btn.disabled = false; } }, 1500);
+}
+let _notasTelActivo = '';
+function abrirNotasModal(telefono, nombre, notas) {
+  _notasTelActivo = telefono;
+  document.getElementById('notas-modal-title').textContent = 'NOTAS — ' + nombre;
+  document.getElementById('notas-textarea').value = notas || '';
+  document.getElementById('modal-notas').style.display = 'flex';
+  setTimeout(() => document.getElementById('notas-textarea').focus(), 80);
+}
+function cerrarNotasModal() {
+  document.getElementById('modal-notas').style.display = 'none';
+  _notasTelActivo = '';
+}
+async function guardarNotas() {
+  if (!_notasTelActivo) return;
+  const btn   = document.getElementById('notas-save-btn');
+  const notas = document.getElementById('notas-textarea').value;
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try {
+    const r = await fetch('/api/leads/' + encodeURIComponent(_notasTelActivo) + '/notas', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notas }),
+    });
+    if (r.ok) {
+      cerrarNotasModal();
+      actualizarLeads();  // refresca la lista para que el ícono se actualice
+    } else {
+      btn.textContent = 'Error — reintentar';
+      btn.disabled = false;
+    }
+  } catch(_) { btn.textContent = 'Error — reintentar'; btn.disabled = false; }
 }
 async function actualizarMensajes() {
   const r = await fetch('/api/messages'); const d = await r.json();

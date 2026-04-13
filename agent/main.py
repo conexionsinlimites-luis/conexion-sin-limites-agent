@@ -298,27 +298,37 @@ def _calcular_nuevo_estado(estado_actual: str, intencion: str) -> str:
 def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:
     """
     Detecta y extrae el marcador [ALERTA_SUPERVISOR|...] de la respuesta de Valentina.
-    El regex es permisivo: matchea cualquier variante del marcador sin importar
-    el orden ni si faltan campos, para que NUNCA llegue texto crudo al cliente.
-    Retorna (respuesta_sin_marcador, datos_alerta_o_None).
+    También elimina cualquier texto interno que NUNCA debe ver el cliente:
+    - Bloques [ALERTA_SUPERVISOR|...] en cualquier variante
+    - Líneas que contengan "LEAD CALIENTE", "LEAD_CALIENTE", etc.
+    - Líneas que contengan otros marcadores internos ([ALERTA...], [LEAD...])
+    Retorna (respuesta_limpia, datos_alerta_o_None).
     """
-    # Match permisivo: cualquier contenido dentro de [ALERTA_SUPERVISOR...]
-    patron_broad = r'\[ALERTA_SUPERVISOR[^\]]*\]'
-    if not re.search(patron_broad, respuesta):
-        return respuesta, None
+    patron_alerta  = r'\[ALERTA_SUPERVISOR[^\]]*\]'
+    patron_caliente = r'(?im)^[^\n]*\b(LEAD[\s_]CALIENTE|ALERTA[\s_]SUPERVISOR)\b[^\n]*$'
+    patron_marcador = r'\[[A-Z_]+\|[^\]]*\]'   # cualquier [TAG|...] interno
 
-    # Extraer campos por nombre (orden independiente)
-    def _campo(key: str) -> str:
-        m = re.search(rf'{key}=([^|\]]*)', respuesta)
-        return m.group(1).strip() if m else ""
+    tiene_alerta = bool(re.search(patron_alerta, respuesta))
 
-    datos = {
-        "nombre": _campo("nombre"),
-        "tel":    _campo("tel"),
-        "dir":    _campo("dir"),
-    }
-    respuesta_limpia = re.sub(patron_broad, "", respuesta).strip()
-    return respuesta_limpia, datos
+    datos = None
+    if tiene_alerta:
+        def _campo(key: str) -> str:
+            m = re.search(rf'{key}=([^|\]]*)', respuesta)
+            return m.group(1).strip() if m else ""
+        datos = {
+            "nombre": _campo("nombre"),
+            "tel":    _campo("tel"),
+            "dir":    _campo("dir"),
+        }
+
+    # Limpiar todo lo que no debe llegar al cliente
+    limpia = re.sub(patron_alerta,   "", respuesta)
+    limpia = re.sub(patron_caliente, "", limpia, flags=re.IGNORECASE | re.MULTILINE)
+    limpia = re.sub(patron_marcador, "", limpia)
+    # Colapsar líneas vacías múltiples en una sola
+    limpia = re.sub(r'\n{3,}', '\n\n', limpia).strip()
+
+    return limpia, datos
 
 
 async def _enviar_notificacion_caliente(telefono_cliente: str):

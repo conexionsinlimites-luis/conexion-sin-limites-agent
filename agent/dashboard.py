@@ -1695,6 +1695,22 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   }
   #btn-wa-back { display: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border); background: transparent; color: var(--txt2); cursor: pointer; font-size: 1.1rem; flex-shrink: 0; }
   #btn-wa-back:hover { background: rgba(255,255,255,.06); color: var(--txt); }
+
+  /* ── Botones rápidos en sidebar ── */
+  .wa-quick-tomar, .wa-quick-liberar {
+    width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: .65rem; cursor: pointer; transition: all .15s;
+    line-height: 1;
+  }
+  .wa-quick-tomar {
+    background: rgba(0,212,255,.1); border: 1px solid rgba(0,212,255,.3); color: var(--neon);
+  }
+  .wa-quick-tomar:hover { background: rgba(0,212,255,.25); box-shadow: 0 0 8px rgba(0,212,255,.3); }
+  .wa-quick-liberar {
+    background: rgba(168,85,247,.12); border: 1px solid rgba(168,85,247,.35); color: #c084fc;
+  }
+  .wa-quick-liberar:hover { background: rgba(168,85,247,.25); box-shadow: 0 0 8px rgba(168,85,247,.3); }
 </style>
 </head>
 <body>
@@ -2138,7 +2154,14 @@ async function actualizarMensajes() {
     </div>`;
   }).join('');
 }
-function irAlChat(telefono) { switchTab('chat'); setTimeout(() => seleccionarContacto(telefono), 80); }
+function irAlChat(telefono) {
+  const pc = document.getElementById('panel-chat');
+  if (pc.style.display !== 'flex') {
+    _abrirLivePanel();
+    history.pushState({ view: 'live' }, '');
+  }
+  setTimeout(() => seleccionarContacto(telefono), 80);
+}
 async function refresh() {
   try { await Promise.all([actualizarStats(), actualizarLeads(), actualizarMensajes()]); }
   catch(e) { document.getElementById('last-update').textContent = 'ERROR'; }
@@ -2226,6 +2249,9 @@ function renderConvList() {
     const badge   = c.modo_humano
       ? '<span class="modo-badge humano">Humano</span>'
       : '<span class="modo-badge bot">Bot</span>';
+    const toggleBtn = c.modo_humano
+      ? `<button class="wa-quick-liberar" title="Liberar IA" onclick="event.stopPropagation();quickLiberar('${safeTel}')">&#9646;&#9646;</button>`
+      : `<button class="wa-quick-tomar"   title="Tomar lead" onclick="event.stopPropagation();quickTomar('${safeTel}',this)">&#128100;</button>`;
     return `
     <div class="wa-conv-item${activo}" id="wconv-${safeTel}" onclick="seleccionarContacto('${safeTel}')">
       <div class="wa-conv-avatar" style="background:${color}22;color:${color};border:1.5px solid ${color}44">${inicial}</div>
@@ -2236,7 +2262,7 @@ function renderConvList() {
         </div>
         <div class="wa-conv-preview-row">
           <span class="wa-conv-preview">${preview}</span>
-          <span class="wa-conv-badges">${badge}</span>
+          <span class="wa-conv-badges">${badge}${toggleBtn}</span>
         </div>
       </div>
     </div>`;
@@ -2315,6 +2341,29 @@ function renderChatHeader(telefono, modoHumano) {
       <div class="wa-chat-hdr-sub">+${safeTel}</div>
     </div>
     <div class="wa-chat-hdr-actions">${actions}</div>`;
+}
+
+// Acciones rápidas desde el sidebar (sin abrir el chat)
+async function quickTomar(telefono, btn) {
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch('/api/leads/'+encodeURIComponent(telefono)+'/tomar', { method:'POST' });
+    if (r.ok) {
+      await actualizarConversaciones();
+      // Si el chat está abierto para este contacto, actualizar el header también
+      if (contactoActivo === telefono) renderChatHeader(telefono, true);
+    }
+  } catch(_) {}
+  btn.disabled = false;
+}
+async function quickLiberar(telefono) {
+  try {
+    const r = await fetch('/api/leads/'+encodeURIComponent(telefono)+'/liberar', { method:'POST' });
+    if (r.ok) {
+      await actualizarConversaciones();
+      if (contactoActivo === telefono) renderChatHeader(telefono, false);
+    }
+  } catch(_) {}
 }
 
 async function tomarLeadChat(telefono, btn) {
@@ -2553,7 +2602,7 @@ function irAlChatDesdeModal(tel) {
     _abrirLivePanel();
     history.pushState({ view: 'live' }, '');
   }
-  setTimeout(() => abrirChat(tel), 280);
+  setTimeout(() => seleccionarContacto(tel), 280);
 }
 
 // =========================================================================

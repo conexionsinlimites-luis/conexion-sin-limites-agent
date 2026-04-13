@@ -714,7 +714,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Valentina CRM — Conexion Sin Limites</title>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" crossorigin>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -745,7 +745,6 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     background: var(--bg);
     color: var(--txt);
     font-family: 'Space Grotesk', system-ui, sans-serif;
-    min-height: 100vh;
     overflow-x: hidden;
   }
 
@@ -1321,22 +1320,29 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   /* ── MOBILE RESPONSIVE ────────────────────────────────────── */
   @media(max-width:768px) {
     header {
-      padding: 0 1rem;
+      padding: 0 max(.85rem, env(safe-area-inset-left));
+      padding-top: max(.45rem, env(safe-area-inset-top));
+      padding-bottom: .45rem;
+      padding-right: max(.85rem, env(safe-area-inset-right));
       height: auto;
-      min-height: 54px;
-      flex-wrap: wrap;
-      gap: .3rem;
-      padding-top: .5rem;
-      padding-bottom: .5rem;
+      min-height: 52px;
+      flex-wrap: nowrap;   /* fuerza fila única — evita que el header crezca */
+      gap: .5rem;
+      overflow: hidden;
     }
-    .logo-icon { width: 30px; height: 30px; font-size: .9rem; border-radius: 6px; }
-    .logo-name { font-size: .72rem; letter-spacing: .08em; }
-    .logo-sub  { font-size: .55rem; letter-spacing: .12em; }
-    .header-right { gap: .6rem; }
-    .live-badge { padding: .25rem .65rem; font-size: .6rem; }
-    #last-update { display: none; }
+    .logo-icon { width: 28px; height: 28px; font-size: .82rem; border-radius: 6px; flex-shrink: 0; }
+    .logo-name { font-size: .68rem; letter-spacing: .06em; }
+    .logo-sub  { font-size: .5rem; letter-spacing: .1em; }
+    /* Ocultar live badge y timestamp en móvil — sobran espacio y causan wrap */
+    .header-right { display: none; }
+    .tab-nav { flex-shrink: 0; }
+    .tab-btn { padding: .28rem .75rem; font-size: .68rem; }
+    .btn-live { padding: .28rem .75rem; font-size: .68rem; flex-shrink: 0; }
 
-    main { padding: 1rem; }
+    main {
+      padding: 1rem;
+      padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    }
 
     .section-label { margin-bottom: .75rem; font-size: .55rem; }
 
@@ -1451,7 +1457,13 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   }
 
   /* ── TABS ──────────────────────────────────────────────────── */
-  body { overflow: hidden; height: 100vh; }
+  :root { --app-h: 100vh; }
+  /* dvh = dynamic viewport height: sigue la barra del navegador en móvil */
+  @supports (height: 100dvh) { :root { --app-h: 100dvh; } }
+  /* Layout de app pantalla completa via flexbox — sin cálculos de altura */
+  html { height: var(--app-h); overflow: hidden; }
+  body { overflow: hidden; height: 100%; display: flex; flex-direction: column; }
+  header { flex-shrink: 0; }
   .tab-nav {
     display: flex; gap: .2rem;
     background: rgba(0,0,0,.45); border: 1px solid var(--border);
@@ -1480,11 +1492,13 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
   /* ── PANELS ─────────────────────────────────────────────────── */
   #panel-metrics {
-    height: calc(100vh - 70px); overflow-y: auto; overflow-x: hidden;
+    flex: 1; min-height: 0;
+    overflow-y: auto; overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
+    padding-bottom: env(safe-area-inset-bottom);
   }
   #panel-chat {
-    height: calc(100vh - 70px);
+    flex: 1; min-height: 0;
     display: none; flex-direction: column;
   }
 
@@ -1641,12 +1655,43 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .wa-send-btn.modo-humano { background: rgba(168,85,247,.15); color: #c084fc; border-color: rgba(168,85,247,.4); }
   .wa-send-btn.modo-humano:hover:not(:disabled) { background: rgba(168,85,247,.28); box-shadow: 0 0 14px rgba(168,85,247,.3); }
 
+  /* ── Botón toggle Tomar Lead / Liberar IA ── */
+  .btn-toggle-lead {
+    display: flex; align-items: center; gap: .35rem;
+    padding: .38rem .9rem; border-radius: 20px; border: none; cursor: pointer;
+    font-family: 'Space Grotesk', sans-serif; font-size: .72rem; font-weight: 700;
+    letter-spacing: .04em; text-transform: uppercase; white-space: nowrap;
+    transition: background .2s, box-shadow .2s, transform .1s;
+    background: rgba(0,212,255,.12); color: var(--neon);
+    border: 1px solid rgba(0,212,255,.4);
+    box-shadow: 0 0 8px rgba(0,212,255,.15);
+  }
+  .btn-toggle-lead:hover:not(:disabled) {
+    background: rgba(0,212,255,.22); box-shadow: 0 0 16px rgba(0,212,255,.3);
+    transform: translateY(-1px);
+  }
+  .btn-toggle-lead.activo {
+    background: rgba(168,85,247,.15); color: #c084fc;
+    border-color: rgba(168,85,247,.5);
+    box-shadow: 0 0 8px rgba(168,85,247,.2);
+  }
+  .btn-toggle-lead.activo:hover:not(:disabled) {
+    background: rgba(168,85,247,.25); box-shadow: 0 0 16px rgba(168,85,247,.35);
+  }
+  .btn-toggle-lead:disabled { opacity: .5; cursor: default; transform: none; }
+  .btn-toggle-icon { font-size: .8rem; line-height: 1; }
+
   /* Mobile WA */
   @media(max-width:640px) {
     .wa-sidebar { position: absolute; left: 0; top: 0; bottom: 0; z-index: 10; transform: translateX(0); transition: transform .25s; width: 100%; }
     .wa-chat-panel { width: 100%; }
     .wa-layout.chat-abierto .wa-sidebar { transform: translateX(-100%); }
     #btn-wa-back { display: flex !important; }
+    .wa-input-row {
+      padding-bottom: max(.65rem, env(safe-area-inset-bottom));
+    }
+    .wa-chat-hdr-actions { gap: .3rem; }
+    .btn-tomar, .btn-liberar { font-size: .56rem; padding: .22rem .6rem; }
   }
   #btn-wa-back { display: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border); background: transparent; color: var(--txt2); cursor: pointer; font-size: 1.1rem; flex-shrink: 0; }
   #btn-wa-back:hover { background: rgba(255,255,255,.06); color: var(--txt); }
@@ -1809,7 +1854,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
         <!-- Header -->
         <div class="wa-chat-hdr" id="wa-chat-hdr">
-          <button id="btn-wa-back" onclick="volverSidebar()" title="Volver">&#8592;</button>
+          <button id="btn-wa-back" onclick="history.back()" title="Volver">&#8592;</button>
         </div>
 
         <!-- Burbujas -->
@@ -1981,22 +2026,34 @@ function switchTab(tab) {
   }
 }
 
-function toggleLive() {
+function _abrirLivePanel() {
   const pc  = document.getElementById('panel-chat');
-  const btn = document.getElementById('btn-live');
   const pm  = document.getElementById('panel-metrics');
-  const abierto = pc.style.display === 'flex';
-  if (abierto) {
-    pc.style.display = 'none';
-    pc.style.flexDirection = '';
-    pm.style.display = '';
-    btn.classList.remove('active');
+  const btn = document.getElementById('btn-live');
+  pm.style.display = 'none';
+  pc.style.display = 'flex';
+  pc.style.flexDirection = 'column';
+  btn.classList.add('active');
+  actualizarConversaciones();
+}
+
+function _cerrarLivePanel() {
+  const pc  = document.getElementById('panel-chat');
+  const pm  = document.getElementById('panel-metrics');
+  const btn = document.getElementById('btn-live');
+  pc.style.display = 'none';
+  pc.style.flexDirection = '';
+  pm.style.display = '';
+  btn.classList.remove('active');
+}
+
+function toggleLive() {
+  const pc = document.getElementById('panel-chat');
+  if (pc.style.display === 'flex') {
+    history.back(); // deja que popstate maneje el cierre
   } else {
-    pm.style.display = 'none';
-    pc.style.display = 'flex';
-    pc.style.flexDirection = 'column';
-    btn.classList.add('active');
-    actualizarConversaciones();
+    _abrirLivePanel();
+    history.pushState({ view: 'live' }, '');
   }
 }
 
@@ -2208,12 +2265,14 @@ async function seleccionarContacto(telefono) {
   // Mobile: ocultar sidebar, mostrar chat
   document.getElementById('wa-layout').classList.add('chat-abierto');
 
-  renderChatHeader(telefono, modoHumano);
+  // Empujar estado para que el botón atrás del SO vuelva al sidebar
+  history.pushState({ view: 'chat', telefono }, '');
 
-  const input = document.getElementById('wa-input');
-  const btn   = document.getElementById('wa-send-btn');
-  if (input) { input.disabled = false; input.focus(); }
-  if (btn)   btn.disabled = false;
+  renderChatHeader(telefono, modoHumano);
+  if (modoHumano) {
+    const input = document.getElementById('wa-input');
+    if (input) input.focus();
+  }
 
   await cargarMensajes(telefono);
 }
@@ -2235,15 +2294,21 @@ function renderChatHeader(telefono, modoHumano) {
   const input  = document.getElementById('wa-input');
   const btn    = document.getElementById('wa-send-btn');
   if (hint)  hint.style.display  = modoHumano ? 'block' : 'none';
-  if (input) { input.classList.toggle('modo-humano', modoHumano); input.placeholder = modoHumano ? 'Escribe tu respuesta y presiona Enter...' : 'Toma el lead primero para responder...'; }
-  if (btn)   btn.classList.toggle('modo-humano', modoHumano);
+  if (input) {
+    input.disabled = !modoHumano;
+    input.classList.toggle('modo-humano', modoHumano);
+    input.placeholder = modoHumano ? 'Escribe tu respuesta y presiona Enter...' : 'Toma el lead para responder...';
+  }
+  if (btn) { btn.disabled = !modoHumano; btn.classList.toggle('modo-humano', modoHumano); }
   const actions = modoHumano
-    ? `<span class="modo-badge humano" style="font-size:.62rem">Modo Humano</span>
-       <button class="btn-liberar" onclick="liberarLeadChat('${safeTel}')">Liberar IA</button>`
-    : `<span class="modo-badge bot" style="font-size:.62rem">Bot activo</span>
-       <button class="btn-tomar" onclick="tomarLeadChat('${safeTel}',this)">Tomar lead</button>`;
+    ? `<button class="btn-toggle-lead activo" onclick="liberarLeadChat('${safeTel}')">
+         <span class="btn-toggle-icon">&#9646;&#9646;</span> Liberar IA
+       </button>`
+    : `<button class="btn-toggle-lead" onclick="tomarLeadChat('${safeTel}',this)">
+         <span class="btn-toggle-icon">&#128100;</span> Tomar Lead
+       </button>`;
   el.innerHTML = `
-    <button id="btn-wa-back" onclick="volverSidebar()" title="Volver">&#8592;</button>
+    <button id="btn-wa-back" onclick="history.back()" title="Volver">&#8592;</button>
     <div class="wa-chat-hdr-avatar" style="background:${color}22;color:${color};border:1.5px solid ${color}55">${inicial}</div>
     <div class="wa-chat-hdr-info">
       <div class="wa-chat-hdr-name">${esc(nombre)}</div>
@@ -2253,11 +2318,23 @@ function renderChatHeader(telefono, modoHumano) {
 }
 
 async function tomarLeadChat(telefono, btn) {
-  btn.disabled = true; btn.textContent = '...';
+  btn.disabled = true;
+  btn.innerHTML = '<span class="btn-toggle-icon">&#8987;</span> Tomando...';
   try {
     const r = await fetch('/api/leads/'+encodeURIComponent(telefono)+'/tomar', { method:'POST' });
-    if (!r.ok) { btn.disabled=false; btn.textContent='Tomar lead'; }
-  } catch(_) { btn.disabled=false; btn.textContent='Tomar lead'; }
+    if (r.ok) {
+      renderChatHeader(telefono, true);
+      // foco al input para que el agente pueda escribir de inmediato
+      const inp = document.getElementById('wa-input');
+      if (inp) { inp.disabled = false; inp.focus(); }
+    } else {
+      btn.disabled = false;
+      btn.innerHTML = '<span class="btn-toggle-icon">&#128100;</span> Tomar Lead';
+    }
+  } catch(_) {
+    btn.disabled = false;
+    btn.innerHTML = '<span class="btn-toggle-icon">&#128100;</span> Tomar Lead';
+  }
 }
 async function liberarLeadChat(telefono) {
   const r = await fetch('/api/leads/'+encodeURIComponent(telefono)+'/liberar', { method:'POST' });
@@ -2471,18 +2548,57 @@ async function abrirKpiModal(tipo) {
 function cerrarKpiModal() { document.getElementById('modal-kpi').style.display = 'none'; }
 function irAlChatDesdeModal(tel) {
   cerrarKpiModal();
-  const pc  = document.getElementById('panel-chat');
-  const pm  = document.getElementById('panel-metrics');
-  const btn = document.getElementById('btn-live');
+  const pc = document.getElementById('panel-chat');
   if (pc.style.display !== 'flex') {
-    pm.style.display = 'none';
-    pc.style.display = 'flex';
-    pc.style.flexDirection = 'column';
-    btn.classList.add('active');
-    actualizarConversaciones();
+    _abrirLivePanel();
+    history.pushState({ view: 'live' }, '');
   }
   setTimeout(() => abrirChat(tel), 280);
 }
+
+// =========================================================================
+// VIEWPORT HEIGHT
+// --app-h: usa 100dvh nativo si el browser lo soporta (iOS 16+, Chrome 108+).
+// Fallback JS para browsers más viejos.
+// --header-h: siempre se mide del DOM para ser exacto.
+// =========================================================================
+const _dvhSupported = CSS.supports('height', '100dvh');
+
+function setAppHeight() {
+  if (!_dvhSupported) {
+    // Fallback para browsers sin dvh: usar visualViewport para altura real visible
+    const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    document.documentElement.style.setProperty('--app-h', h + 'px');
+  }
+  // Con flexbox ya no necesitamos calcular --header-h manualmente
+}
+setAppHeight();
+window.addEventListener('resize', setAppHeight);
+window.addEventListener('load', () => requestAnimationFrame(setAppHeight));
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', setAppHeight);
+}
+
+// =========================================================================
+// HISTORY — botón atrás del SO navega dentro del dashboard
+// =========================================================================
+// Estado inicial: métricas (replaceState para no añadir entrada extra)
+history.replaceState({ view: 'metrics' }, '');
+
+window.addEventListener('popstate', function(e) {
+  const state = e.state || { view: 'metrics' };
+  if (state.view === 'chat') {
+    // volviendo de chat → mostrar sidebar del Live Chat
+    volverSidebar();
+  } else if (state.view === 'live') {
+    // volviendo de live → si hay chat abierto en móvil, cerrar primero
+    if (contactoActivo) volverSidebar();
+  } else {
+    // volviendo a métricas → cerrar panel Live si está abierto
+    const pc = document.getElementById('panel-chat');
+    if (pc && pc.style.display === 'flex') _cerrarLivePanel();
+  }
+});
 
 // =========================================================================
 // INIT

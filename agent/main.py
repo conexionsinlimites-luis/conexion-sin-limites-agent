@@ -266,6 +266,15 @@ async def webhook_handler(request: Request):
             else:
                 _log("ERROR", f"enviar_mensaje falló para {msg.telefono} — revisar token/credenciales en Railway")
 
+            # Programar follow-up automático: si el cliente no responde en 2h, Valentina lo recordará
+            # La cadena completa es 2h → 24h → 3d → 30d → 60d (cada uno se encadena en scheduler.py)
+            if estado_actual not in ("cerrado", "modo_humano"):
+                try:
+                    await crm.programar_followup(msg.telefono, "2h")
+                    _log("INFO", f"Follow-up 2h programado para {msg.telefono}")
+                except Exception as _fe:
+                    _log("ERROR", f"Error programando follow-up: {_fe}")
+
             # Enviar alerta al supervisor y marcar lead como listo para cierre
             if alerta:
                 await _enviar_alerta_supervisor(alerta, msg.telefono)

@@ -7,8 +7,11 @@ Módulo completo de leads, scoring y estados
 import re
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from agent.database import get_pool
+
+_ZONA_CHILE = ZoneInfo("America/Santiago")
 
 # ═══════════════════════════════════════
 # ESTADOS Y SCORES
@@ -386,30 +389,45 @@ def detectar_estancamiento(mensajes_en_estado: int, estado: str) -> bool:
 # FOLLOW-UP AUTOMÁTICO
 # ═══════════════════════════════════════
 
+MENSAJES_FOLLOWUP = {
+    "2h":  "Hola {nombre}, solo quería saber si pudiste revisar lo que te comenté 😊",
+    "24h": "Hola {nombre}, ¿cómo estás? Quedé pendiente con tu consulta sobre {tema}",
+    "3d":  "Hola {nombre}, conseguimos una promoción que creo te puede interesar 🔥",
+    "30d": "Hola {nombre}, ¿cómo ha estado tu servicio de internet/TV? 😊",
+    "60d": "Hola {nombre}, ¿sigues con {empresa}? Han salido planes nuevos que quizás te convengan más 📱",
+}
+
+_DELTAS_FOLLOWUP = {
+    "2h":  timedelta(hours=2),
+    "24h": timedelta(hours=24),
+    "3d":  timedelta(days=3),
+    "30d": timedelta(days=30),
+    "60d": timedelta(days=60),
+}
+
+
 async def programar_followup(telefono: str, tipo: str):
-    """Programar follow-up automático."""
-    ahora = datetime.now()
-    tiempos = {
-        "2h":  ahora + timedelta(hours=2),
-        "24h": ahora + timedelta(hours=24),
-        "3d":  ahora + timedelta(days=3),
-        "30d": ahora + timedelta(days=30),
-        "60d": ahora + timedelta(days=60),
-    }
-    mensajes = {
-        "2h":  "Hola {nombre}, solo quería saber si pudiste revisar lo que te comenté 😊",
-        "24h": "Hola {nombre}, ¿cómo estás? Quedé pendiente con tu consulta sobre {tema}",
-        "3d":  "Hola {nombre}, conseguimos una promoción que creo te puede interesar 🔥",
-        "30d": "Hola {nombre}, ¿cómo ha estado tu servicio de internet/TV? 😊",
-        "60d": "Hola {nombre}, ¿sigues con {empresa}? Han salido planes nuevos que quizás te convengan más 📱",
-    }
-    programado_para = tiempos.get(tipo)
-    if not programado_para:
+    """
+    Programa un follow-up automático.
+    Almacena en UTC naive; el ajuste de ventana horaria se calcula en hora Chile.
+    """
+    delta = _DELTAS_FOLLOWUP.get(tipo)
+    if not delta:
         return
-    if programado_para.hour < 9:
-        programado_para = programado_para.replace(hour=9, minute=0)
-    elif programado_para.hour >= 21:
-        programado_para = (programado_para + timedelta(days=1)).replace(hour=9, minute=0)
+
+    # Hora objetivo en UTC
+    objetivo_utc = datetime.now(timezone.utc) + delta
+
+    # Convertir a Chile para verificar ventana 9am-9pm
+    objetivo_chile = objetivo_utc.astimezone(_ZONA_CHILE)
+    if objetivo_chile.hour < 9:
+        objetivo_chile = objetivo_chile.replace(hour=9, minute=0, second=0, microsecond=0)
+    elif objetivo_chile.hour >= 21:
+        siguiente_dia = objetivo_chile + timedelta(days=1)
+        objetivo_chile = siguiente_dia.replace(hour=9, minute=0, second=0, microsecond=0)
+
+    # Guardar como UTC naive (TIMESTAMP WITHOUT TIME ZONE en PG)
+    programado_para = objetivo_chile.astimezone(timezone.utc).replace(tzinfo=None)
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -422,7 +440,7 @@ async def programar_followup(telefono: str, tipo: str):
             await conn.execute("""
                 INSERT INTO followup_programado (telefono, tipo, mensaje, programado_para)
                 VALUES ($1, $2, $3, $4)
-            """, telefono, tipo, mensajes.get(tipo, ""), programado_para)
+            """, telefono, tipo, MENSAJES_FOLLOWUP.get(tipo, ""), programado_para)
 
 
 async def cancelar_followups(telefono: str):

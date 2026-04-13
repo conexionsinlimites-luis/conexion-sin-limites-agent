@@ -4,6 +4,17 @@
 """
 Revisa cada 5 minutos la tabla followup_programado y envía los mensajes
 pendientes por WhatsApp. Respeta la ventana horaria de Chile: 9:00am - 9:00pm.
+
+Cadena automática:
+  Valentina responde → programa 2h
+  Si no hay respuesta en 2h  → envía y programa 24h
+  Si no hay respuesta en 24h → envía y programa 3d
+  Si no hay respuesta en 3d  → envía y programa 30d
+  Si no hay respuesta en 30d → envía y programa 60d
+  Si no hay respuesta en 60d → fin de cadena
+
+En cualquier momento que el cliente responde, cancelar_followups() cancela
+el pendiente y main.py reinicia la cadena desde 2h.
 """
 
 import asyncio
@@ -16,9 +27,18 @@ import agent.crm as crm
 logger = logging.getLogger("agentkit")
 
 ZONA_CHILE     = ZoneInfo("America/Santiago")
-HORA_INICIO    = 9   # 9:00am
-HORA_FIN       = 21  # 9:00pm
-INTERVALO_SECS = 5 * 60  # 5 minutos
+HORA_INICIO    = 9   # 9:00am Chile
+HORA_FIN       = 21  # 9:00pm Chile
+INTERVALO_SECS = 5 * 60  # revisar cada 5 minutos
+
+# Cadena de secuencia: qué tipo programar después de enviar cada uno
+SIGUIENTE_FOLLOWUP: dict[str, str | None] = {
+    "2h":  "24h",
+    "24h": "3d",
+    "3d":  "30d",
+    "30d": "60d",
+    "60d": None,  # fin de la cadena — no programar más
+}
 
 
 def _en_horario_chile() -> bool:
@@ -43,18 +63,19 @@ def _rellenar_plantilla(mensaje: str, nombre: str, subproducto: str) -> str:
 async def _procesar_followups(proveedor) -> int:
     """
     Obtiene los follow-ups listos para enviar y los despacha.
+    Tras cada envío exitoso, encadena el siguiente tipo en la secuencia.
     Retorna la cantidad de mensajes enviados.
     """
     if not _en_horario_chile():
         ahora_chile = datetime.now(ZONA_CHILE)
-        logger.debug(f"Scheduler: fuera de ventana horaria Chile ({ahora_chile.strftime('%H:%M')}), saltando")
+        logger.debug(f"Scheduler: fuera de ventana Chile ({ahora_chile.strftime('%H:%M')}), saltando")
         return 0
 
     pendientes = await crm.obtener_followups_pendientes()
     if not pendientes:
         return 0
 
-    logger.info(f"Scheduler: {len(pendientes)} follow-up(s) pendiente(s)")
+    logger.info(f"Scheduler: {len(pendientes)} follow-up(s) listo(s) para enviar")
     enviados = 0
 
     for followup in pendientes:
@@ -63,6 +84,7 @@ async def _procesar_followups(proveedor) -> int:
         subproducto = followup.get("subproducto", "")
         mensaje_raw = followup["mensaje"]
         followup_id = followup["id"]
+        tipo        = followup["tipo"]
 
         mensaje = _rellenar_plantilla(mensaje_raw, nombre, subproducto)
 
@@ -71,11 +93,28 @@ async def _procesar_followups(proveedor) -> int:
             if ok:
                 await crm.marcar_followup_enviado(followup_id)
                 enviados += 1
-                logger.info(f"Follow-up enviado a {telefono} (tipo: {followup['tipo']})")
+                logger.info(f"Follow-up [{tipo}] enviado a {telefono}: '{mensaje[:60]}…'")
+
+                # Encadenar el siguiente follow-up si el lead sigue activo
+                siguiente = SIGUIENTE_FOLLOWUP.get(tipo)
+                if siguiente:
+                    try:
+                        lead_info  = await crm.obtener_lead(telefono)
+                        estado_lead = (lead_info or {}).get("estado", "")
+                        if estado_lead not in ("cerrado", "modo_humano"):
+                            await crm.programar_followup(telefono, siguiente)
+                            logger.info(f"Encadenado follow-up [{siguiente}] para {telefono}")
+                        else:
+                            logger.info(f"Follow-up [{siguiente}] omitido — lead {telefono} en estado '{estado_lead}'")
+                    except Exception as e:
+                        logger.error(f"Error encadenando follow-up [{siguiente}] para {telefono}: {e}")
+                else:
+                    logger.info(f"Cadena de follow-ups completada para {telefono} (último: {tipo})")
+
             else:
-                logger.error(f"Error enviando follow-up a {telefono} — proveedor retornó False")
+                logger.error(f"Follow-up [{tipo}] a {telefono} falló — proveedor retornó False")
         except Exception as e:
-            logger.error(f"Excepcion enviando follow-up a {telefono}: {e}")
+            logger.error(f"Excepción enviando follow-up [{tipo}] a {telefono}: {e}")
 
     return enviados
 
@@ -86,6 +125,7 @@ async def iniciar_scheduler(proveedor):
     Cada 5 minutos revisa y envía follow-ups pendientes dentro del horario Chile.
     """
     logger.info("Scheduler de follow-ups iniciado (intervalo: 5 min | ventana: 9am-9pm Chile)")
+    logger.info("Cadena: primera respuesta → 2h → 24h → 3d → 30d → 60d")
 
     while True:
         try:

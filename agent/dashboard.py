@@ -2586,17 +2586,25 @@ if (window.visualViewport) {
 history.replaceState({ view: 'metrics' }, '');
 
 window.addEventListener('popstate', function(e) {
-  const state = e.state || { view: 'metrics' };
+  const state = e.state;
+  // Sin estado o estado base = el usuario intentó salir de la app.
+  // Empujar un nuevo estado metrics para que nunca pueda salir con el botón atrás.
+  if (!state || !state.view || state.view === 'metrics') {
+    history.pushState({ view: 'metrics' }, '');
+    const pc = document.getElementById('panel-chat');
+    if (pc && pc.style.display === 'flex') _cerrarLivePanel();
+    return;
+  }
   if (state.view === 'chat') {
     // volviendo de chat → mostrar sidebar del Live Chat
     volverSidebar();
   } else if (state.view === 'live') {
-    // volviendo de live → si hay chat abierto en móvil, cerrar primero
+    // volviendo de live → si hay chat abierto en móvil, cerrar chat
     if (contactoActivo) volverSidebar();
-  } else {
-    // volviendo a métricas → cerrar panel Live si está abierto
-    const pc = document.getElementById('panel-chat');
-    if (pc && pc.style.display === 'flex') _cerrarLivePanel();
+    else {
+      const pc = document.getElementById('panel-chat');
+      if (pc && pc.style.display === 'flex') _cerrarLivePanel();
+    }
   }
 });
 

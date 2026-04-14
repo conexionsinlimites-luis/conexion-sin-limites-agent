@@ -14,18 +14,49 @@ import csv
 import io
 import json
 import logging
+import secrets
 import traceback
 from datetime import datetime, date
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from agent.config import TELEFONO_OWNER
+from agent.config import TELEFONO_OWNER, DASHBOARD_USER, DASHBOARD_PASSWORD
 from agent.database import get_pool
 import agent.crm as _crm
 from agent.memory import guardar_mensaje as _guardar_memoria
 
 logger = logging.getLogger("agentkit")
-router = APIRouter()
+
+# ── Autenticación básica del dashboard ────────────────────────────────────────
+_http_basic = HTTPBasic()
+
+
+def _verificar_auth(credentials: HTTPBasicCredentials = Depends(_http_basic)):
+    """Valida usuario y contraseña contra las variables de entorno."""
+    if not DASHBOARD_PASSWORD:
+        # Sin contraseña configurada en Railway, acceso bloqueado por seguridad
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dashboard no disponible: configura DASHBOARD_PASSWORD en Railway.",
+        )
+    ok_user = secrets.compare_digest(
+        credentials.username.encode("utf-8"),
+        DASHBOARD_USER.encode("utf-8"),
+    )
+    ok_pass = secrets.compare_digest(
+        credentials.password.encode("utf-8"),
+        DASHBOARD_PASSWORD.encode("utf-8"),
+    )
+    if not (ok_user and ok_pass):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales incorrectas",
+            headers={"WWW-Authenticate": "Basic realm=\"Valentina CRM\""},
+        )
+
+
+router = APIRouter(dependencies=[Depends(_verificar_auth)])
 
 # ── SSE broadcast system ───────────────────────────────────────────────────────
 _sse_queues: set[asyncio.Queue] = set()

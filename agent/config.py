@@ -118,3 +118,17 @@ TELEFONO_OWNER = _get(
     "NUMERO_PROPIETARIO",
     default="56941762315",
 )
+
+# ── Dashboard — autenticación básica ───────────────────────
+# Configurar en Railway: DASHBOARD_USER y DASHBOARD_PASSWORD
+DASHBOARD_USER = _get(
+    "DASHBOARD_USER",
+    "USUARIO_DASHBOARD",
+    default="admin",
+)
+DASHBOARD_PASSWORD = _get(
+    "DASHBOARD_PASSWORD",
+    "CONTRASENA_DASHBOARD",
+    "CLAVE_DASHBOARD",
+    default="",
+)

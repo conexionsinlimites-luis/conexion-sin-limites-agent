@@ -141,6 +141,9 @@ async def init_db():
         await conn.execute(
             "ALTER TABLE leads ADD COLUMN IF NOT EXISTS tags TEXT DEFAULT '[]'"
         )
+        await conn.execute(
+            "ALTER TABLE leads ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''"
+        )
     print("CRM Valentina inicializado correctamente (PostgreSQL)")
 
 

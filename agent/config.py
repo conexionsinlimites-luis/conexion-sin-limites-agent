@@ -132,3 +132,11 @@ DASHBOARD_PASSWORD = _get(
     "CLAVE_DASHBOARD",
     default="",
 )
+
+# ── Make.com webhook — token de seguridad ──────────────────
+# Configurar en Railway: MAKE_WEBHOOK_TOKEN (cualquier string secreto)
+MAKE_WEBHOOK_TOKEN = _get(
+    "MAKE_WEBHOOK_TOKEN",
+    "TOKEN_MAKE",
+    default="",
+)

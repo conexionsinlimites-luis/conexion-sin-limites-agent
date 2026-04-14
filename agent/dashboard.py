@@ -444,6 +444,40 @@ async def api_leads():
     return JSONResponse({"leads": leads})
 
 
+# ── API: estadísticas por comuna (Make.com → Google Sheets) ───────────────────
+
+@router.get("/api/leads/comunas/stats")
+async def api_comunas_stats():
+    """
+    Devuelve conteo de leads agrupados por comuna.
+    Usado por Make.com para actualizar el mapa de calor en Google Sheets.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                COALESCE(NULLIF(TRIM(comuna), ''), 'Sin especificar') AS comuna,
+                COUNT(*)                                               AS total,
+                COUNT(CASE WHEN estado IN ('caliente','listo_para_cierre','cerrado') THEN 1 END) AS calientes,
+                ROUND(AVG(score::numeric), 1)                          AS score_promedio
+            FROM leads
+            GROUP BY COALESCE(NULLIF(TRIM(comuna), ''), 'Sin especificar')
+            ORDER BY total DESC
+        """)
+    return JSONResponse({
+        "comunas": [
+            {
+                "comuna":         r["comuna"],
+                "total":          r["total"],
+                "calientes":      r["calientes"] or 0,
+                "score_promedio": float(r["score_promedio"]) if r["score_promedio"] else 0,
+            }
+            for r in rows
+        ],
+        "actualizado": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
 # ── API: exportar leads a CSV ──────────────────────────────────────────────────
 
 @router.get("/api/leads/export-csv")

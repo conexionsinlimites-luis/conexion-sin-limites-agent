@@ -390,6 +390,55 @@ async def actualizar_notas_lead(telefono: str, request: Request):
     return JSONResponse({"ok": True})
 
 
+# ── API: detalle completo de un lead ──────────────────────────────────────────
+
+@router.get("/api/leads/{telefono}/detail")
+async def lead_detail(telefono: str):
+    """Devuelve todos los campos de un lead para el modal de detalle."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT nombre, telefono, estado, score, subproducto,
+                   notas, lead_resumen, direccion, comuna,
+                   objeciones, mensajes_en_estado,
+                   ultima_interaccion, created_at
+            FROM leads WHERE telefono = $1
+        """, telefono)
+        if not row:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            objeciones = json.loads(row["objeciones"] or "[]")
+        except Exception:
+            objeciones = []
+        return JSONResponse({
+            "nombre":             row["nombre"] or "Desconocido",
+            "telefono":           row["telefono"],
+            "estado":             row["estado"] or "nuevo",
+            "score":              row["score"] or 0,
+            "subproducto":        row["subproducto"] or "—",
+            "notas":              row["notas"] or "",
+            "resumen":            row["lead_resumen"] or "",
+            "direccion":          row["direccion"] or "—",
+            "comuna":             row["comuna"] or "—",
+            "objeciones":         objeciones,
+            "mensajes_en_estado": row["mensajes_en_estado"] or 0,
+            "ultima_interaccion": str(row["ultima_interaccion"]) if row["ultima_interaccion"] else "—",
+            "created_at":         str(row["created_at"]) if row["created_at"] else "—",
+            "color":              COLOR_ESTADO.get(row["estado"] or "nuevo", "#888"),
+            "prioridad":          calcular_prioridad(row["estado"] or "nuevo", row["score"] or 0),
+        })
+
+
+# ── API: regenerar resumen IA de un lead ──────────────────────────────────────
+
+@router.post("/api/leads/{telefono}/resumen")
+async def regenerar_resumen_lead(telefono: str):
+    """Dispara la regeneración del resumen IA en background y responde inmediatamente."""
+    import asyncio as _asyncio
+    _asyncio.create_task(_crm.actualizar_resumen_lead(telefono))
+    return JSONResponse({"ok": True, "message": "regeneración iniciada en background"})
+
+
 # ── API: tomar / liberar lead (modo humano) ────────────────────────────────────
 
 @router.post("/api/leads/{telefono}/tomar")
@@ -1165,7 +1214,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .leads-list { display: flex; flex-direction: column; gap: .5rem; max-height: 320px; overflow-y: auto; }
 
   .lead-row {
-    display: grid; grid-template-columns: 1.4rem 1fr auto auto auto auto;
+    display: grid; grid-template-columns: 1.4rem 1fr auto auto auto auto auto;
     align-items: center; gap: .75rem;
     background: rgba(255,255,255,0.02);
     border-radius: 10px; padding: .65rem 1rem;
@@ -1480,6 +1529,48 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     transition: opacity .2s; line-height: 1; border-radius: 4px;
   }
   .btn-ver-chat:hover { opacity: 1; background: rgba(0,212,255,0.1); }
+  .btn-detail {
+    background: none; border: none; cursor: pointer;
+    font-size: .82rem; padding: .1rem .2rem; opacity: .4;
+    transition: opacity .2s; line-height: 1; border-radius: 4px;
+  }
+  .btn-detail:hover { opacity: 1; background: rgba(168,85,247,.12); }
+  .ld-section { margin-bottom: 1rem; }
+  .ld-section-title {
+    font-family: 'Orbitron', sans-serif; font-size: .55rem;
+    font-weight: 700; letter-spacing: .12em; color: var(--txt3);
+    text-transform: uppercase; margin-bottom: .45rem;
+  }
+  .ld-resumen-block {
+    background: rgba(0,212,255,.04); border: 1px solid rgba(0,212,255,.15);
+    border-radius: 10px; padding: 1rem 1.1rem;
+    font-size: .8rem; line-height: 1.75; color: var(--txt);
+    white-space: pre-wrap; font-family: 'Space Grotesk', sans-serif;
+  }
+  .ld-resumen-empty {
+    background: rgba(255,255,255,.03); border: 1px dashed rgba(255,255,255,.1);
+    border-radius: 10px; padding: .85rem 1.1rem;
+    font-size: .72rem; color: var(--txt3); text-align: center;
+  }
+  .ld-meta-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: .5rem .75rem;
+  }
+  .ld-meta-item { }
+  .ld-meta-label { font-size: .58rem; color: var(--txt3); letter-spacing: .06em; text-transform: uppercase; margin-bottom: .15rem; }
+  .ld-meta-value { font-size: .78rem; color: var(--txt); font-weight: 600; }
+  .ld-objeciones { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .ld-obj-tag {
+    background: rgba(255,34,51,.1); border: 1px solid rgba(255,34,51,.3);
+    color: #ff6b7a; border-radius: 6px; padding: .15rem .55rem;
+    font-size: .65rem; font-weight: 700; letter-spacing: .04em;
+  }
+  .ld-regenerar-btn {
+    background: rgba(168,85,247,.08); border: 1px solid rgba(168,85,247,.3);
+    color: #c084fc; font-family: 'Space Grotesk', sans-serif;
+    font-size: .65rem; font-weight: 700; padding: .3rem .8rem;
+    border-radius: 8px; cursor: pointer; transition: background .15s;
+  }
+  .ld-regenerar-btn:hover { background: rgba(168,85,247,.18); }
   .btn-notas {
     background: none; border: none; cursor: pointer;
     font-size: .85rem; padding: .1rem .2rem; opacity: .3;
@@ -1579,7 +1670,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
     .leads-list { max-height: 220px; }
     .lead-row   {
-      grid-template-columns: 1.2rem 1fr auto auto;
+      grid-template-columns: 1.2rem 1fr auto auto auto;
       gap: .4rem; padding: .55rem .7rem;
     }
     .lead-row .lead-score { display: none; }
@@ -2206,6 +2297,25 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Modal: Detalle del lead -->
+<div class="modal-overlay" id="modal-lead-detail" onclick="if(event.target===this)cerrarLeadDetail()">
+  <div class="modal-box" style="max-width:580px">
+    <div class="modal-header">
+      <div>
+        <div id="ld-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">DETALLE DEL LEAD</div>
+        <div id="ld-sub" style="font-size:.65rem;color:var(--txt3);margin-top:.25rem"></div>
+      </div>
+      <div style="display:flex;gap:.6rem;align-items:center">
+        <button id="ld-btn-chat" onclick="" style="background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.68rem;font-weight:700;padding:.38rem .9rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.18)'" onmouseout="this.style.background='rgba(0,212,255,.08)'">&#8594; Chat</button>
+        <button class="modal-close" onclick="cerrarLeadDetail()">&#10005;&nbsp; Cerrar</button>
+      </div>
+    </div>
+    <div id="ld-body" class="modal-messages" style="max-height:72vh;gap:.75rem;padding:1.4rem 1.75rem">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</div>
+
 <script>
 // =========================================================================
 // CHART
@@ -2396,11 +2506,12 @@ async function actualizarLeads() {
   const el = document.getElementById('leads-list');
   if (!d.leads.length) { el.innerHTML = '<div class="empty">Sin leads registrados</div>'; return; }
   el.innerHTML = d.leads.map(l => {
-    const safeTel   = l.telefono.replace(/['"<>&]/g, '');
+    const safeTel    = l.telefono.replace(/['"<>&]/g, '');
     const safeNombre = esc(l.nombre);
     const notasIcon  = l.notas
       ? `<button class="btn-notas activo" title="Ver/editar notas" onclick="abrirNotasModal('${safeTel}','${safeNombre}',this.dataset.notas)" data-notas="${esc(l.notas)}">&#128221;</button>`
-      : `<button class="btn-notas"        title="Agregar nota"    onclick="abrirNotasModal('${safeTel}','${safeNombre}','')"                                              >&#128221;</button>`;
+      : `<button class="btn-notas"        title="Agregar nota"     onclick="abrirNotasModal('${safeTel}','${safeNombre}','')"                                              >&#128221;</button>`;
+    const detailIcon = `<button class="btn-detail" title="Ver resumen IA" onclick="abrirLeadDetail('${safeTel}')">&#128270;</button>`;
     return `
     <div class="lead-row fade-in" style="border-left-color:${l.color};box-shadow:inset 2px 0 8px ${l.color}22">
       <div class="lead-priority" title="${prioridadLabel(l.prioridad)}">${l.prioridad}</div>
@@ -2411,6 +2522,7 @@ async function actualizarLeads() {
       </div>
       ${estadoBadge(l.estado,l.color)}
       <div class="lead-score">${l.score}<span style="font-size:.55rem;opacity:.6">pts</span></div>
+      ${detailIcon}
       ${notasIcon}
       ${botonAccion(l)}
     </div>`;
@@ -2493,6 +2605,120 @@ function irAlChat(telefono) {
   }
   setTimeout(() => seleccionarContacto(telefono), 80);
 }
+// =========================================================================
+// MODAL — Detalle del lead (resumen IA)
+// =========================================================================
+let _ldTelActivo = '';
+
+async function abrirLeadDetail(telefono) {
+  _ldTelActivo = telefono;
+  const modal = document.getElementById('modal-lead-detail');
+  const body  = document.getElementById('ld-body');
+  document.getElementById('ld-title').textContent   = 'DETALLE DEL LEAD';
+  document.getElementById('ld-sub').textContent     = '+' + telefono;
+  document.getElementById('ld-btn-chat').onclick    = () => { cerrarLeadDetail(); irAlChat(telefono); };
+  body.innerHTML = '<div class="empty">Cargando...</div>';
+  modal.style.display = 'flex';
+  try {
+    const r = await fetch('/api/leads/' + encodeURIComponent(telefono) + '/detail');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    renderLeadDetail(d);
+  } catch(err) {
+    body.innerHTML = `<div class="empty">Error cargando detalle (${err.message})</div>`;
+  }
+}
+
+function cerrarLeadDetail() {
+  document.getElementById('modal-lead-detail').style.display = 'none';
+  _ldTelActivo = '';
+}
+
+function renderLeadDetail(d) {
+  const body   = document.getElementById('ld-body');
+  const color  = d.color || '#888';
+  document.getElementById('ld-title').textContent = esc(d.nombre).toUpperCase();
+  document.getElementById('ld-sub').textContent   = d.prioridad + ' ' + d.estado + '  ·  +' + d.telefono;
+
+  // Resumen IA
+  const resumenHtml = d.resumen
+    ? `<div class="ld-resumen-block">${esc(d.resumen)}</div>`
+    : `<div class="ld-resumen-empty">Sin resumen generado todavía — se genera automáticamente después de cada mensaje</div>`;
+
+  // Objeciones
+  const objHtml = d.objeciones && d.objeciones.length
+    ? `<div class="ld-objeciones">${d.objeciones.map(o => `<span class="ld-obj-tag">${esc(o)}</span>`).join('')}</div>`
+    : `<span style="font-size:.72rem;color:var(--txt3)">Ninguna registrada</span>`;
+
+  body.innerHTML = `
+    <div class="ld-section">
+      <div class="ld-section-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Resumen IA</span>
+        <button class="ld-regenerar-btn" onclick="regenerarResumen('${d.telefono.replace(/['"<>&]/g,'')}')">&#9881; Regenerar</button>
+      </div>
+      ${resumenHtml}
+    </div>
+
+    <div class="ld-section">
+      <div class="ld-section-title">Datos del lead</div>
+      <div class="ld-meta-grid">
+        <div class="ld-meta-item">
+          <div class="ld-meta-label">Estado</div>
+          <div class="ld-meta-value"><span style="color:${color}">${d.estado}</span></div>
+        </div>
+        <div class="ld-meta-item">
+          <div class="ld-meta-label">Score</div>
+          <div class="ld-meta-value" style="color:${d.score>=70?'#ff4d6d':d.score>=40?'#f4a261':'#888'}">${d.score} / 100</div>
+        </div>
+        <div class="ld-meta-item">
+          <div class="ld-meta-label">Producto</div>
+          <div class="ld-meta-value">${esc(d.subproducto)}</div>
+        </div>
+        <div class="ld-meta-item">
+          <div class="ld-meta-label">Dirección</div>
+          <div class="ld-meta-value">${esc(d.direccion)}${d.comuna!=='—'?' · '+esc(d.comuna):''}</div>
+        </div>
+        <div class="ld-meta-item">
+          <div class="ld-meta-label">Última interacción</div>
+          <div class="ld-meta-value" style="font-size:.7rem;font-weight:400">${fmtDateLabel(d.ultima_interaccion) || d.ultima_interaccion}</div>
+        </div>
+        <div class="ld-meta-item">
+          <div class="ld-meta-label">Lead creado</div>
+          <div class="ld-meta-value" style="font-size:.7rem;font-weight:400">${fmtDateLabel(d.created_at) || d.created_at}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ld-section">
+      <div class="ld-section-title">Objeciones detectadas</div>
+      ${objHtml}
+    </div>
+
+    ${d.notas ? `
+    <div class="ld-section">
+      <div class="ld-section-title">Notas internas</div>
+      <div style="background:rgba(168,85,247,.05);border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:.85rem 1rem;font-size:.78rem;color:var(--txt);line-height:1.6;white-space:pre-wrap">${esc(d.notas)}</div>
+    </div>` : ''}
+  `;
+}
+
+async function regenerarResumen(telefono) {
+  const btn = document.querySelector('.ld-regenerar-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando...'; }
+  try {
+    const r = await fetch('/api/leads/' + encodeURIComponent(telefono) + '/resumen', { method: 'POST' });
+    if (r.ok) {
+      // Esperar 1s para que la tarea background termine y luego recargar el modal
+      await new Promise(res => setTimeout(res, 1000));
+      await abrirLeadDetail(telefono);
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = '⚙ Regenerar'; }
+    }
+  } catch(_) {
+    if (btn) { btn.disabled = false; btn.textContent = '⚙ Regenerar'; }
+  }
+}
+
 // =========================================================================
 // ESTADÍSTICAS DE CAMPAÑAS
 // =========================================================================

@@ -258,8 +258,8 @@ async def webhook_handler(request: Request):
                 "role": "assistant", "content": respuesta_limpia, "ts": ts_ahora,
             })
 
-            # Actualizar resumen del lead con la información más reciente
-            await crm.actualizar_resumen_lead(msg.telefono)
+            # Actualizar resumen del lead en background — no bloquea el envío de respuesta
+            asyncio.create_task(crm.actualizar_resumen_lead(msg.telefono))
 
             enviado = await proveedor.enviar_mensaje(msg.telefono, respuesta_limpia)
             if enviado:

@@ -593,45 +593,99 @@ async def generar_alerta_supervisor(telefono: str, tipo: str) -> str | None:
 
 
 # ═══════════════════════════════════════
-# RESUMEN AUTOMÁTICO DEL LEAD
+# RESUMEN AUTOMÁTICO DEL LEAD (Claude Haiku)
 # ═══════════════════════════════════════
 
 async def generar_resumen_lead(telefono: str) -> str:
+    """
+    Genera un resumen estructurado del lead usando Claude Haiku.
+    Analiza el historial real de la conversación y los datos del CRM.
+    Devuelve un texto corto multi-línea con: producto, objeciones,
+    urgencia y próximo paso.
+    """
+    from anthropic import AsyncAnthropic
+    from agent.config import ANTHROPIC_API_KEY
+
     lead = await obtener_lead(telefono)
     if not lead:
         return ""
-    partes = []
-    subproducto = (lead.get("subproducto") or "").strip()
-    partes.append(f"🎯 {subproducto}" if subproducto and subproducto.lower() not in ("general", "telecom", "") else "🎯 Producto sin definir")
-    estado = lead.get("estado", "nuevo")
-    score  = lead.get("score", 0)
-    partes.append(f"{estado} · {score}pts")
+
+    historial = await obtener_historial(telefono, limite=20)
+    if not historial:
+        return ""
+
+    # Construir transcripción resumida para el prompt
+    transcripcion = []
+    for m in historial:
+        rol  = "Cliente" if m.get("rol") == "user" else "Valentina"
+        text = (m.get("mensaje") or "").strip()[:300]
+        if text:
+            transcripcion.append(f"{rol}: {text}")
+
+    if not transcripcion:
+        return ""
+
     try:
-        objeciones = json.loads(lead.get("objeciones") or "[]")
+        objeciones_raw = json.loads(lead.get("objeciones") or "[]")
     except Exception:
-        objeciones = []
-    if objeciones:
-        partes.append(f"⚠️ {', '.join(objeciones)}")
-    historial = await obtener_historial(telefono, limite=10)
-    msgs_cliente = [m["mensaje"] for m in historial if m.get("rol") == "user"]
-    if msgs_cliente:
-        ultimo = msgs_cliente[-1][:100].strip()
-        if ultimo:
-            partes.append(f'💬 "{ultimo}"')
-    return "  ·  ".join(partes)
+        objeciones_raw = []
+
+    contexto_crm = (
+        f"Estado CRM: {lead.get('estado','nuevo')} | "
+        f"Score: {lead.get('score',0)}/100 | "
+        f"Producto detectado: {lead.get('subproducto') or 'sin definir'} | "
+        f"Objeciones registradas: {', '.join(objeciones_raw) if objeciones_raw else 'ninguna'}"
+    )
+
+    prompt = f"""Eres un analista de ventas. Analiza esta conversación de WhatsApp y el contexto CRM.
+
+CONTEXTO CRM:
+{contexto_crm}
+
+CONVERSACIÓN:
+{chr(10).join(transcripcion[-16:])}
+
+Genera un resumen ejecutivo CONCISO del lead. Responde ÚNICAMENTE con este formato exacto (sin introducción, sin markdown extra):
+
+🎯 Producto: [producto o servicio de interés específico, o "Por definir"]
+⚠️ Objeciones: [lista breve separada por comas, o "Ninguna"]
+⏱ Urgencia: [Alta / Media / Baja] — [razón en 5 palabras máximo]
+➡️ Próximo paso: [acción concreta y específica en una línea]
+💡 Contexto: [1 oración clave sobre el perfil del cliente]"""
+
+    try:
+        client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        # Fallback a resumen simple si la API falla
+        partes = []
+        subprod = (lead.get("subproducto") or "").strip()
+        partes.append(f"🎯 Producto: {subprod or 'Por definir'}")
+        partes.append(f"⚠️ Objeciones: {', '.join(objeciones_raw) if objeciones_raw else 'Ninguna'}")
+        partes.append(f"⏱ Urgencia: Media")
+        partes.append(f"➡️ Próximo paso: Continuar seguimiento")
+        return "\n".join(partes)
 
 
 async def actualizar_resumen_lead(telefono: str) -> None:
-    """Regenera y guarda el resumen del lead."""
-    resumen = await generar_resumen_lead(telefono)
-    if not resumen:
-        return
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE leads SET lead_resumen = $1 WHERE telefono = $2",
-            resumen, telefono
-        )
+    """Regenera y guarda el resumen IA del lead en background."""
+    try:
+        resumen = await generar_resumen_lead(telefono)
+        if not resumen:
+            return
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE leads SET lead_resumen = $1 WHERE telefono = $2",
+                resumen, telefono
+            )
+    except Exception:
+        pass  # nunca propagar — es una tarea de background
 
 
 # ═══════════════════════════════════════

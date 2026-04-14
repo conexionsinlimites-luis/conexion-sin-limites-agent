@@ -26,6 +26,7 @@ from agent.scheduler import iniciar_scheduler
 from agent.dashboard import router as dashboard_router, broadcast_event
 from agent.make_integration import enviar_a_make
 from agent.database import get_pool, close_pool
+from agent.campanas import inicializar_campanas
 
 # Número del supervisor comercial que recibe alertas (mismo que TELEFONO_OWNER)
 TELEFONO_SUPERVISOR = TELEFONO_OWNER
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI):
     _log("INFO", "Pool PostgreSQL inicializado")
     await inicializar_db()
     await crm.init_db()
+    await inicializar_campanas()
     _log("INFO", "Tablas PostgreSQL verificadas")
     _log("INFO", f"Servidor AgentKit en puerto {PORT}")
     _log("INFO", f"Proveedor: {proveedor.__class__.__name__}")

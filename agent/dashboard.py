@@ -24,6 +24,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from agent.config import TELEFONO_OWNER, DASHBOARD_USER, DASHBOARD_PASSWORD
 from agent.database import get_pool
 import agent.crm as _crm
+import agent.campanas as _campanas
 from agent.memory import guardar_mensaje as _guardar_memoria
 
 logger = logging.getLogger("agentkit")
@@ -326,6 +327,84 @@ async def api_stats_campanas():
         "leads_por_dia": leads_por_dia,
         "top_productos": top_productos,
     })
+
+
+# ── API: campañas ─────────────────────────────────────────────────────────────
+
+@router.get("/api/campanas")
+async def api_listar_campanas():
+    """Lista todas las campañas ordenadas por fecha de creación."""
+    campanas = await _campanas.listar_campanas()
+    return JSONResponse({"campanas": campanas})
+
+
+@router.post("/api/campanas")
+async def api_crear_campana(request: Request):
+    """Crea una campaña con sus destinatarios (estado: borrador)."""
+    body = await request.json()
+    nombre  = (body.get("nombre") or "").strip()[:120]
+    mensaje = (body.get("mensaje") or "").strip()[:2000]
+    if not nombre or not mensaje:
+        raise HTTPException(status_code=400, detail="nombre y mensaje son requeridos")
+    filtros = {
+        "tag":       (body.get("tag") or "").strip(),
+        "estado":    (body.get("estado") or "").strip(),
+        "score_min": body.get("score_min") or 0,
+        "comuna":    (body.get("comuna") or "").strip(),
+        "desde":     (body.get("desde") or "").strip(),
+        "hasta":     (body.get("hasta") or "").strip(),
+    }
+    campana_id = await _campanas.crear_campana(nombre, mensaje, filtros)
+    return JSONResponse({"ok": True, "id": campana_id})
+
+
+@router.get("/api/campanas/preview")
+async def api_preview_campana(
+    tag: str = "", estado: str = "", score_min: int = 0,
+    comuna: str = "", desde: str = "", hasta: str = "",
+):
+    """Vista previa del número de leads que recibirán la campaña."""
+    filtros = {
+        "tag": tag, "estado": estado, "score_min": score_min,
+        "comuna": comuna, "desde": desde, "hasta": hasta,
+    }
+    data = await _campanas.preview_destinatarios(filtros)
+    return JSONResponse(data)
+
+
+@router.get("/api/campanas/{campana_id}")
+async def api_obtener_campana(campana_id: int):
+    """Detalle completo de una campaña."""
+    campana = await _campanas.obtener_campana(campana_id)
+    if not campana:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+    return JSONResponse(campana)
+
+
+@router.get("/api/campanas/{campana_id}/destinatarios")
+async def api_destinatarios(campana_id: int):
+    """Lista de destinatarios de una campaña con estado de envío."""
+    dests = await _campanas.obtener_destinatarios(campana_id)
+    return JSONResponse({"destinatarios": dests})
+
+
+@router.post("/api/campanas/{campana_id}/enviar")
+async def api_enviar_campana(campana_id: int):
+    """Dispara el envío de la campaña en background."""
+    campana = await _campanas.obtener_campana(campana_id)
+    if not campana:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+    if campana["estado"] not in ("borrador",):
+        raise HTTPException(status_code=400, detail=f"No se puede enviar: estado actual es '{campana['estado']}'")
+    asyncio.create_task(_campanas.enviar_campana_bg(campana_id, _get_proveedor()))
+    return JSONResponse({"ok": True, "message": "Envío iniciado en background"})
+
+
+@router.post("/api/campanas/{campana_id}/cancelar")
+async def api_cancelar_campana(campana_id: int):
+    """Cancela una campaña en estado borrador."""
+    await _campanas.cancelar_campana(campana_id)
+    return JSONResponse({"ok": True})
 
 
 # ── API: leads recientes ───────────────────────────────────────────────────────
@@ -2155,6 +2234,117 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   #btn-wa-back { display: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border); background: transparent; color: var(--txt2); cursor: pointer; font-size: 1.1rem; flex-shrink: 0; }
   #btn-wa-back:hover { background: rgba(255,255,255,.06); color: var(--txt); }
 
+  /* ── Panel campañas ── */
+  #panel-campanas { display: none; }
+  .cpn-toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; flex-wrap: wrap;
+    margin: 1.5rem 0 .75rem;
+  }
+  .cpn-toolbar-title {
+    font-family: 'Orbitron', sans-serif; font-size: .8rem; font-weight: 700;
+    color: var(--neon); letter-spacing: .12em; text-transform: uppercase;
+  }
+  .cpn-new-btn {
+    background: rgba(0,212,255,.1); border: 1px solid rgba(0,212,255,.4);
+    color: var(--neon); font-family: 'Space Grotesk', sans-serif;
+    font-size: .72rem; font-weight: 700; letter-spacing: .06em;
+    padding: .45rem 1.1rem; border-radius: 10px; cursor: pointer;
+    transition: background .15s, box-shadow .2s;
+  }
+  .cpn-new-btn:hover { background: rgba(0,212,255,.2); box-shadow: 0 0 14px rgba(0,212,255,.25); }
+
+  .cpn-list { display: flex; flex-direction: column; gap: .55rem; }
+  .cpn-row {
+    display: grid; grid-template-columns: auto 1fr auto auto auto;
+    align-items: center; gap: .85rem;
+    background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.06);
+    border-radius: 12px; padding: .8rem 1.1rem;
+    cursor: pointer; transition: background .18s, border-color .2s;
+    border-left: 3px solid transparent;
+  }
+  .cpn-row:hover { background: rgba(0,212,255,.04); border-color: rgba(0,212,255,.18); }
+  .cpn-row-estado {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  }
+  .cpn-row-info { min-width: 0; }
+  .cpn-row-nombre { font-size: .82rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cpn-row-meta   { font-size: .65rem; color: var(--txt3); margin-top: 2px; }
+  .cpn-estado-badge {
+    font-size: .6rem; font-weight: 700; letter-spacing: .06em;
+    padding: .2rem .6rem; border-radius: 20px; white-space: nowrap;
+    text-transform: uppercase;
+  }
+  .cpn-metrics { text-align: right; min-width: 80px; }
+  .cpn-metrics-num { font-size: .8rem; font-weight: 700; font-family: 'Orbitron', sans-serif; color: var(--neon); }
+  .cpn-metrics-sub { font-size: .6rem; color: var(--txt3); }
+  .cpn-action-btn {
+    background: none; border: 1px solid rgba(255,255,255,.1); color: var(--txt2);
+    font-size: .62rem; font-weight: 700; letter-spacing: .05em;
+    padding: .3rem .7rem; border-radius: 8px; cursor: pointer;
+    transition: all .15s; white-space: nowrap;
+    font-family: 'Space Grotesk', sans-serif; text-transform: uppercase;
+  }
+  .cpn-action-btn:hover { background: rgba(255,255,255,.08); color: var(--txt); }
+  .cpn-action-btn.enviar { border-color: rgba(0,255,136,.35); color: var(--green); }
+  .cpn-action-btn.enviar:hover { background: rgba(0,255,136,.1); box-shadow: 0 0 8px rgba(0,255,136,.2); }
+
+  /* Progress bar en fila de campaña */
+  .cpn-progress { height: 3px; border-radius: 2px; background: rgba(255,255,255,.08); margin-top: 5px; overflow: hidden; }
+  .cpn-progress-fill { height: 100%; border-radius: 2px; transition: width .6s ease; }
+
+  /* Modal nueva campaña */
+  .ncpn-section { margin-bottom: 1.1rem; }
+  .ncpn-label {
+    font-size: .63rem; font-weight: 700; letter-spacing: .08em; color: var(--txt3);
+    text-transform: uppercase; margin-bottom: .4rem;
+  }
+  .ncpn-input, .ncpn-select, .ncpn-textarea {
+    width: 100%; background: rgba(255,255,255,.04); border: 1px solid var(--border);
+    border-radius: 10px; color: var(--txt); padding: .55rem .85rem;
+    font-family: 'Space Grotesk', sans-serif; font-size: .8rem; outline: none;
+    transition: border-color .2s; box-sizing: border-box;
+  }
+  .ncpn-textarea { min-height: 110px; resize: vertical; line-height: 1.5; }
+  .ncpn-input:focus, .ncpn-select:focus, .ncpn-textarea:focus { border-color: rgba(0,212,255,.5); }
+  .ncpn-select option { background: #111; }
+  .ncpn-filtros-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: .6rem;
+  }
+  .ncpn-preview-box {
+    background: rgba(0,212,255,.05); border: 1px solid rgba(0,212,255,.2);
+    border-radius: 10px; padding: .75rem 1rem; min-height: 60px;
+  }
+  .ncpn-preview-num {
+    font-family: 'Orbitron', sans-serif; font-size: 1.6rem; font-weight: 700;
+    color: var(--neon); line-height: 1.1;
+  }
+  .ncpn-preview-sub { font-size: .68rem; color: var(--txt3); margin-top: 3px; }
+  .ncpn-preview-list { margin-top: .6rem; display: flex; flex-direction: column; gap: .25rem; }
+  .ncpn-preview-item { font-size: .68rem; color: var(--txt2); display: flex; gap: .5rem; }
+  .ncpn-hint {
+    font-size: .65rem; color: var(--txt3); margin-top: .35rem; line-height: 1.4;
+  }
+
+  /* Modal detalle campaña */
+  .cpnd-header-grid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: .75rem; margin-bottom: 1.1rem;
+  }
+  .cpnd-stat { background: rgba(255,255,255,.03); border-radius: 10px; padding: .65rem .85rem; }
+  .cpnd-stat-label { font-size: .6rem; color: var(--txt3); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+  .cpnd-stat-val   { font-size: 1.1rem; font-weight: 700; font-family: 'Orbitron', sans-serif; margin-top: 3px; }
+  .cpnd-dest-row {
+    display: grid; grid-template-columns: auto 1fr auto;
+    align-items: center; gap: .6rem;
+    padding: .45rem .65rem; border-radius: 8px; font-size: .72rem;
+    background: rgba(255,255,255,.02);
+  }
+  .cpnd-dest-rows { display: flex; flex-direction: column; gap: .3rem; max-height: 50vh; overflow-y: auto; }
+  .cpnd-envio-ok  { color: var(--green); font-size: .65rem; font-weight: 700; }
+  .cpnd-envio-err { color: var(--red);   font-size: .65rem; font-weight: 700; }
+  .cpnd-envio-pen { color: var(--txt3);  font-size: .65rem; }
+
   /* ── Botones rápidos en sidebar ── */
   .wa-quick-tomar, .wa-quick-liberar {
     width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
@@ -2185,7 +2375,8 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </div>
   </div>
   <nav class="tab-nav">
-    <button class="tab-btn active" id="tab-metricas" onclick="switchTab('metricas')">&#128200; M&eacute;tricas</button>
+    <button class="tab-btn active" id="tab-metricas"  onclick="switchTab('metricas')">&#128200; M&eacute;tricas</button>
+    <button class="tab-btn"        id="tab-campanas"  onclick="switchTab('campanas')">&#128226; Campa&ntilde;as</button>
   </nav>
   <button class="btn-live" id="btn-live" onclick="toggleLive()">&#128172; Live</button>
   <div class="header-right">
@@ -2414,6 +2605,25 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   </div><!-- /wa-layout -->
 </div><!-- /panel-chat -->
 
+<!-- ── Panel Campañas ──────────────────────────────────────────────────────── -->
+<div id="panel-campanas">
+<main>
+  <div class="cpn-toolbar">
+    <div class="cpn-toolbar-title">&#128226; Campa&ntilde;as de WhatsApp</div>
+    <button class="cpn-new-btn" onclick="abrirNuevaCampana()">+ Nueva Campa&ntilde;a</button>
+  </div>
+  <div class="card">
+    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+      <span>Historial de campa&ntilde;as</span>
+      <span id="cpn-count" style="font-size:.62rem;color:var(--txt3);font-weight:400"></span>
+    </div>
+    <div class="cpn-list" id="cpn-list">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</main>
+</div><!-- /panel-campanas -->
+
 <!-- Modal: KPI Detail -->
 <div class="modal-overlay" id="modal-kpi" onclick="if(event.target===this)cerrarKpiModal()">
   <div class="modal-box" style="max-width:640px">
@@ -2520,6 +2730,100 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       </div>
     </div>
     <div id="ld-body" class="modal-messages" style="max-height:72vh;gap:.75rem;padding:1.4rem 1.75rem">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Nueva Campaña -->
+<div class="modal-overlay" id="modal-nueva-campana" onclick="if(event.target===this)cerrarNuevaCampana()">
+  <div class="modal-box" style="max-width:600px">
+    <div class="modal-header">
+      <div>
+        <div style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">NUEVA CAMPA&Ntilde;A</div>
+        <div style="font-size:.65rem;color:var(--txt3);margin-top:.25rem">Crea y segmenta tu mensaje masivo de WhatsApp</div>
+      </div>
+      <button class="modal-close" onclick="cerrarNuevaCampana()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div style="padding:1.4rem 1.75rem;display:flex;flex-direction:column;gap:.85rem;overflow-y:auto;max-height:80vh">
+
+      <div class="ncpn-section">
+        <div class="ncpn-label">Nombre de la campa&ntilde;a *</div>
+        <input id="ncpn-nombre" class="ncpn-input" type="text" maxlength="120" placeholder="Ej: Promo diciembre — leads tibios">
+      </div>
+
+      <div class="ncpn-section">
+        <div class="ncpn-label">Mensaje *</div>
+        <textarea id="ncpn-mensaje" class="ncpn-textarea" placeholder="Hola {{nombre}}, te escribo de Conexión Sin Límites..."></textarea>
+        <div class="ncpn-hint">Usa <strong>{{nombre}}</strong> para personalizar con el nombre de cada cliente.</div>
+      </div>
+
+      <div class="ncpn-section">
+        <div class="ncpn-label">Segmentaci&oacute;n de destinatarios <span style="font-weight:400;text-transform:none;letter-spacing:0">(opcional — sin filtros = todos los leads)</span></div>
+        <div class="ncpn-filtros-grid">
+          <div>
+            <div class="ncpn-label" style="margin-top:.3rem">Tag</div>
+            <input id="ncpn-tag" class="ncpn-input" type="text" maxlength="50" placeholder="Ej: DirecTV">
+          </div>
+          <div>
+            <div class="ncpn-label" style="margin-top:.3rem">Estado del lead</div>
+            <select id="ncpn-estado" class="ncpn-select">
+              <option value="">Todos los estados</option>
+              <option value="nuevo">Nuevo</option>
+              <option value="contactado">Contactado</option>
+              <option value="interesado">Interesado</option>
+              <option value="tibio">Tibio</option>
+              <option value="caliente">Caliente</option>
+              <option value="cerrado">Cerrado</option>
+              <option value="seguimiento">Seguimiento</option>
+            </select>
+          </div>
+          <div>
+            <div class="ncpn-label" style="margin-top:.3rem">Score m&iacute;nimo</div>
+            <input id="ncpn-score" class="ncpn-input" type="number" min="0" max="100" placeholder="Ej: 30">
+          </div>
+          <div>
+            <div class="ncpn-label" style="margin-top:.3rem">Comuna</div>
+            <input id="ncpn-comuna" class="ncpn-input" type="text" maxlength="80" placeholder="Ej: Santiago">
+          </div>
+          <div>
+            <div class="ncpn-label" style="margin-top:.3rem">Desde (primer contacto)</div>
+            <input id="ncpn-desde" class="ncpn-input" type="date">
+          </div>
+          <div>
+            <div class="ncpn-label" style="margin-top:.3rem">Hasta</div>
+            <input id="ncpn-hasta" class="ncpn-input" type="date">
+          </div>
+        </div>
+        <button id="ncpn-preview-btn" onclick="previewDestinatarios()" style="margin-top:.75rem;background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.72rem;font-weight:700;padding:.4rem 1rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(255,255,255,.1)'" onmouseout="this.style.background='rgba(255,255,255,.05)'">&#128065; Ver destinatarios</button>
+      </div>
+
+      <div class="ncpn-section">
+        <div class="ncpn-label">Vista previa</div>
+        <div class="ncpn-preview-box" id="ncpn-preview-box">
+          <div class="ncpn-preview-sub">Haz clic en "Ver destinatarios" para previsualizar</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:.75rem;justify-content:flex-end;border-top:1px solid rgba(255,255,255,.06);padding-top:.75rem">
+        <button onclick="cerrarNuevaCampana()" style="background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.75rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer">Cancelar</button>
+        <button id="ncpn-save-btn" onclick="crearCampana()" style="background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.4);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.75rem;font-weight:700;padding:.5rem 1.6rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.25)'" onmouseout="this.style.background='rgba(0,212,255,.12)'">Crear campa&ntilde;a</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Detalle Campaña -->
+<div class="modal-overlay" id="modal-campana-detail" onclick="if(event.target===this)cerrarDetalleCampana()">
+  <div class="modal-box" style="max-width:680px">
+    <div class="modal-header">
+      <div>
+        <div id="cpnd-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">DETALLE DE CAMPA&Ntilde;A</div>
+        <div id="cpnd-sub" style="font-size:.65rem;color:var(--txt3);margin-top:.25rem"></div>
+      </div>
+      <button class="modal-close" onclick="cerrarDetalleCampana()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div id="cpnd-body" class="modal-messages" style="max-height:75vh;gap:.6rem;padding:1.4rem 1.75rem">
       <div class="empty">Cargando...</div>
     </div>
   </div>
@@ -2633,19 +2937,46 @@ async function liberarLead(telefono) {
 // TABS
 // =========================================================================
 function switchTab(tab) {
+  // Cerrar Live si está abierto (sin llamar a switchTab de nuevo)
+  const pc  = document.getElementById('panel-chat');
+  const btn = document.getElementById('btn-live');
+  if (pc && pc.style.display === 'flex') {
+    pc.style.display = 'none'; pc.style.flexDirection = '';
+    if (btn) btn.classList.remove('active');
+  }
+
   const pm = document.getElementById('panel-metrics');
+  const pk = document.getElementById('panel-campanas');
   const bm = document.getElementById('tab-metricas');
+  const bk = document.getElementById('tab-campanas');
+
+  // Ocultar todos
+  pm.style.display = 'none';
+  pk.style.display = 'none';
+  bm.classList.remove('active');
+  bk.classList.remove('active');
+
   if (tab === 'metricas') {
     pm.style.display = '';
     bm.classList.add('active');
+  } else if (tab === 'campanas') {
+    pk.style.display = '';
+    bk.classList.add('active');
+    actualizarCampanasList();
   }
 }
+
+let _tabAnterior = 'metricas';
 
 function _abrirLivePanel() {
   const pc  = document.getElementById('panel-chat');
   const pm  = document.getElementById('panel-metrics');
+  const pk  = document.getElementById('panel-campanas');
   const btn = document.getElementById('btn-live');
+  // Guardar qué tab estaba activo
+  _tabAnterior = pk && pk.style.display !== 'none' ? 'campanas' : 'metricas';
   pm.style.display = 'none';
+  pk.style.display = 'none';
   pc.style.display = 'flex';
   pc.style.flexDirection = 'column';
   btn.classList.add('active');
@@ -2654,12 +2985,12 @@ function _abrirLivePanel() {
 
 function _cerrarLivePanel() {
   const pc  = document.getElementById('panel-chat');
-  const pm  = document.getElementById('panel-metrics');
   const btn = document.getElementById('btn-live');
   pc.style.display = 'none';
   pc.style.flexDirection = '';
-  pm.style.display = '';
   btn.classList.remove('active');
+  // Restaurar tab anterior
+  switchTab(_tabAnterior);
 }
 
 function toggleLive() {
@@ -3749,6 +4080,321 @@ window.addEventListener('popstate', function(e) {
   actualizarConversaciones();
   setInterval(actualizarConversaciones, 30_000);
 })();
+
+// =========================================================================
+// CAMPAÑAS
+// =========================================================================
+const CPN_ESTADO_COLOR = {
+  borrador:   '#7f8c8d',
+  enviando:   '#f59e0b',
+  completada: '#00FF88',
+  cancelada:  '#555',
+  error:      '#FF2233',
+};
+const CPN_ESTADO_LABEL = {
+  borrador:   'Borrador',
+  enviando:   'Enviando...',
+  completada: 'Completada',
+  cancelada:  'Cancelada',
+  error:      'Error',
+};
+
+let _cpnPolling = null;
+
+async function actualizarCampanasList() {
+  const r = await fetch('/api/campanas');
+  if (!r.ok) return;
+  const d = await r.json();
+  const lista = d.campanas || [];
+  const el = document.getElementById('cpn-list');
+  const cnt = document.getElementById('cpn-count');
+  if (cnt) cnt.textContent = lista.length + ' campaña' + (lista.length !== 1 ? 's' : '');
+
+  if (!lista.length) {
+    el.innerHTML = `<div class="empty" style="padding:2.5rem;text-align:center">
+      <div style="font-size:2.5rem;opacity:.2;margin-bottom:.75rem">&#128226;</div>
+      <div style="font-size:.82rem;color:var(--txt2)">Aún no hay campañas</div>
+      <div style="font-size:.7rem;color:var(--txt3);margin-top:.3rem">Haz clic en "+ Nueva Campaña" para empezar</div>
+    </div>`;
+    _detenerPolling();
+    return;
+  }
+
+  const hayEnviando = lista.some(c => c.estado === 'enviando');
+  if (hayEnviando) _iniciarPolling(); else _detenerPolling();
+
+  el.innerHTML = lista.map(c => {
+    const color = CPN_ESTADO_COLOR[c.estado] || '#888';
+    const label = CPN_ESTADO_LABEL[c.estado] || c.estado;
+    const total = c.total_destinatarios || 0;
+    const env   = c.total_enviados || 0;
+    const fail  = c.total_fallidos || 0;
+    const pct   = total > 0 ? Math.round(env / total * 100) : 0;
+    const fechaStr = c.fecha_envio
+      ? fmtDateLabel(c.fecha_envio) + ' ' + fmtTime(c.fecha_envio)
+      : fmtDateLabel(c.fecha_creacion) + ' (creada)';
+    const filtroBadges = [
+      c.filtro_tag    ? `tag: ${esc(c.filtro_tag)}`     : '',
+      c.filtro_estado ? `estado: ${esc(c.filtro_estado)}`:'',
+      c.filtro_score_min > 0 ? `score ≥ ${c.filtro_score_min}` : '',
+      c.filtro_comuna ? `${esc(c.filtro_comuna)}`        : '',
+    ].filter(Boolean).join(' · ') || 'Sin filtros';
+    const enviarBtn = c.estado === 'borrador'
+      ? `<button class="cpn-action-btn enviar" onclick="event.stopPropagation();confirmarEnvio(${c.id},'${esc(c.nombre)}',${total})">&#9658; Enviar</button>`
+      : '';
+    const progHtml = c.estado === 'completada' || c.estado === 'enviando'
+      ? `<div class="cpn-progress"><div class="cpn-progress-fill" style="width:${pct}%;background:${color}"></div></div>`
+      : '';
+    return `
+    <div class="cpn-row" onclick="abrirDetalleCampana(${c.id})" style="border-left-color:${color}">
+      <div class="cpn-row-estado" style="background:${color};box-shadow:0 0 6px ${color}66${c.estado==='enviando'?';animation:pulse 1.2s infinite':''}"></div>
+      <div class="cpn-row-info">
+        <div class="cpn-row-nombre">${esc(c.nombre)}</div>
+        <div class="cpn-row-meta">${fechaStr} &nbsp;·&nbsp; ${filtroBadges}</div>
+        ${progHtml}
+      </div>
+      <div style="text-align:right;min-width:55px">
+        <div class="cpn-metrics-num">${total}</div>
+        <div class="cpn-metrics-sub">destinatarios</div>
+      </div>
+      <div style="text-align:right;min-width:60px">
+        <div style="font-size:.75rem;font-weight:700;color:${c.estado==='completada'?'var(--green)':color}">${env}<span style="color:var(--txt3);font-weight:400;font-size:.62rem"> env</span></div>
+        ${fail > 0 ? `<div style="font-size:.68rem;color:var(--red)">${fail} err</div>` : ''}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:.3rem;align-items:flex-end">
+        <span class="cpn-estado-badge" style="background:${color}22;color:${color};border:1px solid ${color}44">${label}</span>
+        ${enviarBtn}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function _iniciarPolling() {
+  if (_cpnPolling) return;
+  _cpnPolling = setInterval(actualizarCampanasList, 4000);
+}
+function _detenerPolling() {
+  if (_cpnPolling) { clearInterval(_cpnPolling); _cpnPolling = null; }
+}
+
+async function confirmarEnvio(id, nombre, total) {
+  if (!confirm(`¿Enviar la campaña "${nombre}" a ${total} destinatario${total!==1?'s':''}?\n\nEsta acción no se puede deshacer.`)) return;
+  const r = await fetch(`/api/campanas/${id}/enviar`, { method: 'POST' });
+  if (r.ok) {
+    await actualizarCampanasList();
+  } else {
+    const d = await r.json().catch(() => ({}));
+    alert('Error al enviar: ' + (d.detail || 'desconocido'));
+  }
+}
+
+// ── Modal nueva campaña ────────────────────────────────────────────────────
+function abrirNuevaCampana() {
+  document.getElementById('modal-nueva-campana').style.display = 'flex';
+  document.getElementById('ncpn-nombre').value  = '';
+  document.getElementById('ncpn-mensaje').value = '';
+  document.getElementById('ncpn-tag').value     = '';
+  document.getElementById('ncpn-estado').value  = '';
+  document.getElementById('ncpn-score').value   = '';
+  document.getElementById('ncpn-comuna').value  = '';
+  document.getElementById('ncpn-desde').value   = '';
+  document.getElementById('ncpn-hasta').value   = '';
+  document.getElementById('ncpn-preview-box').innerHTML = '<div class="ncpn-preview-sub">Haz clic en "Ver destinatarios" para previsualizar</div>';
+  document.getElementById('ncpn-save-btn').disabled = false;
+  document.getElementById('ncpn-save-btn').textContent = 'Crear campaña';
+}
+
+function cerrarNuevaCampana() {
+  document.getElementById('modal-nueva-campana').style.display = 'none';
+}
+
+async function previewDestinatarios() {
+  const params = new URLSearchParams({
+    tag:       document.getElementById('ncpn-tag').value,
+    estado:    document.getElementById('ncpn-estado').value,
+    score_min: document.getElementById('ncpn-score').value || 0,
+    comuna:    document.getElementById('ncpn-comuna').value,
+    desde:     document.getElementById('ncpn-desde').value,
+    hasta:     document.getElementById('ncpn-hasta').value,
+  });
+  const btn = document.getElementById('ncpn-preview-btn');
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    const r = await fetch('/api/campanas/preview?' + params);
+    const d = await r.json();
+    const box = document.getElementById('ncpn-preview-box');
+    const muestraHtml = (d.muestra || []).map(m =>
+      `<div class="ncpn-preview-item">
+        <span style="color:${CPN_ESTADO_COLOR[m.estado]||'#888'}">${m.estado}</span>
+        <span>${esc(m.nombre)}</span>
+        <span style="color:var(--txt3);font-family:monospace">${m.telefono}</span>
+        <span style="color:${m.score>=70?'var(--red)':m.score>=40?'var(--orange)':'var(--txt3)'}">${m.score}pts</span>
+      </div>`
+    ).join('');
+    box.innerHTML = `
+      <div class="ncpn-preview-num">${d.total}</div>
+      <div class="ncpn-preview-sub">lead${d.total!==1?'s':''} recibirá${d.total!==1?'n':''} esta campaña</div>
+      ${d.muestra.length ? '<div class="ncpn-preview-list">' + muestraHtml + (d.total > 5 ? `<div class="ncpn-preview-item" style="color:var(--txt3)">+ ${d.total - 5} más...</div>` : '') + '</div>' : ''}`;
+  } catch(e) {
+    document.getElementById('ncpn-preview-box').innerHTML = '<div class="ncpn-preview-sub" style="color:var(--red)">Error al cargar preview</div>';
+  }
+  btn.disabled = false; btn.textContent = '&#128065; Ver destinatarios';
+}
+
+async function crearCampana() {
+  const nombre  = document.getElementById('ncpn-nombre').value.trim();
+  const mensaje = document.getElementById('ncpn-mensaje').value.trim();
+  if (!nombre || !mensaje) { alert('Nombre y mensaje son requeridos'); return; }
+  const btn = document.getElementById('ncpn-save-btn');
+  btn.disabled = true; btn.textContent = 'Creando...';
+  try {
+    const r = await fetch('/api/campanas', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nombre, mensaje,
+        tag:       document.getElementById('ncpn-tag').value,
+        estado:    document.getElementById('ncpn-estado').value,
+        score_min: parseInt(document.getElementById('ncpn-score').value) || 0,
+        comuna:    document.getElementById('ncpn-comuna').value,
+        desde:     document.getElementById('ncpn-desde').value,
+        hasta:     document.getElementById('ncpn-hasta').value,
+      }),
+    });
+    if (r.ok) {
+      cerrarNuevaCampana();
+      await actualizarCampanasList();
+    } else {
+      const d = await r.json().catch(() => ({}));
+      alert('Error: ' + (d.detail || 'desconocido'));
+      btn.disabled = false; btn.textContent = 'Crear campaña';
+    }
+  } catch(e) {
+    alert('Error de red: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Crear campaña';
+  }
+}
+
+// ── Modal detalle campaña ──────────────────────────────────────────────────
+async function abrirDetalleCampana(id) {
+  const modal = document.getElementById('modal-campana-detail');
+  const body  = document.getElementById('cpnd-body');
+  body.innerHTML = '<div class="empty">Cargando...</div>';
+  modal.style.display = 'flex';
+  try {
+    const [rc, rd] = await Promise.all([
+      fetch(`/api/campanas/${id}`),
+      fetch(`/api/campanas/${id}/destinatarios`),
+    ]);
+    const c = await rc.json();
+    const d = await rd.json();
+    renderDetalleCampana(c, d.destinatarios || []);
+  } catch(e) {
+    body.innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+  }
+}
+
+function cerrarDetalleCampana() {
+  document.getElementById('modal-campana-detail').style.display = 'none';
+}
+
+function renderDetalleCampana(c, dests) {
+  const body  = document.getElementById('cpnd-body');
+  const color = CPN_ESTADO_COLOR[c.estado] || '#888';
+  const titleEl = document.getElementById('cpnd-title');
+  const subEl   = document.getElementById('cpnd-sub');
+  if (titleEl) titleEl.textContent = (c.nombre || 'CAMPAÑA').toUpperCase();
+  if (subEl)   subEl.textContent   = (CPN_ESTADO_LABEL[c.estado] || c.estado) + '  ·  ' +
+    (c.fecha_envio ? fmtDateLabel(c.fecha_envio) + ' ' + fmtTime(c.fecha_envio) : 'Sin enviar');
+  const total = c.total_destinatarios || 0;
+  const env   = c.total_enviados || 0;
+  const fail  = c.total_fallidos || 0;
+  const pct   = total > 0 ? Math.round(env / total * 100) : 0;
+  const tasa_entrega = total > 0 ? (env / total * 100).toFixed(1) : '—';
+
+  // Tasa respuesta: leads que respondieron después de la campaña (simplificado)
+  const statsHtml = `
+    <div class="cpnd-header-grid">
+      <div class="cpnd-stat">
+        <div class="cpnd-stat-label">Total</div>
+        <div class="cpnd-stat-val" style="color:var(--neon)">${total}</div>
+      </div>
+      <div class="cpnd-stat">
+        <div class="cpnd-stat-label">Enviados</div>
+        <div class="cpnd-stat-val" style="color:var(--green)">${env}</div>
+      </div>
+      <div class="cpnd-stat">
+        <div class="cpnd-stat-label">Fallidos</div>
+        <div class="cpnd-stat-val" style="color:${fail>0?'var(--red)':'var(--txt3)'}">${fail}</div>
+      </div>
+      <div class="cpnd-stat">
+        <div class="cpnd-stat-label">Entrega</div>
+        <div class="cpnd-stat-val" style="color:${pct>=80?'var(--green)':pct>=50?'var(--orange)':'var(--red)'}">${tasa_entrega}%</div>
+      </div>
+    </div>`;
+
+  // Barra de progreso
+  const progHtml = `
+    <div style="margin-bottom:1rem">
+      <div style="display:flex;justify-content:space-between;font-size:.65rem;color:var(--txt3);margin-bottom:.3rem">
+        <span>Progreso de entrega</span><span>${env}/${total}</span>
+      </div>
+      <div class="cpn-progress" style="height:6px">
+        <div class="cpn-progress-fill" style="width:${pct}%;background:${color}"></div>
+      </div>
+    </div>`;
+
+  // Filtros usados
+  const filtros = [
+    c.filtro_tag       ? `Tag: ${c.filtro_tag}`        : '',
+    c.filtro_estado    ? `Estado: ${c.filtro_estado}`   : '',
+    c.filtro_score_min > 0 ? `Score ≥ ${c.filtro_score_min}` : '',
+    c.filtro_comuna    ? `Comuna: ${c.filtro_comuna}`   : '',
+  ].filter(Boolean).join('  ·  ') || 'Sin filtros de segmentación';
+
+  const msgHtml = `
+    <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:.75rem 1rem;font-size:.78rem;line-height:1.55;margin-bottom:1rem;white-space:pre-wrap">${esc(c.mensaje)}</div>
+    <div style="font-size:.65rem;color:var(--txt3);margin-bottom:1rem">&#128270; Segmentación: ${esc(filtros)}</div>`;
+
+  // Lista de destinatarios
+  const envOk  = dests.filter(d => d.estado_envio === 'enviado').length;
+  const envErr = dests.filter(d => d.estado_envio === 'fallido').length;
+  const envPen = dests.filter(d => d.estado_envio === 'pendiente').length;
+
+  const destHtml = `
+    <div style="font-size:.65rem;color:var(--txt3);font-weight:700;letter-spacing:.07em;margin-bottom:.5rem;text-transform:uppercase">
+      Destinatarios (${dests.length})
+      ${envErr > 0 ? `<span style="color:var(--red);margin-left:.5rem">${envErr} fallidos</span>` : ''}
+      ${envPen > 0 ? `<span style="color:var(--orange);margin-left:.5rem">${envPen} pendientes</span>` : ''}
+    </div>
+    <div class="cpnd-dest-rows">
+      ${dests.map(d => {
+        const ic = d.estado_envio==='enviado' ? '✓' : d.estado_envio==='fallido' ? '✗' : '…';
+        const cl = d.estado_envio==='enviado' ? 'cpnd-envio-ok' : d.estado_envio==='fallido' ? 'cpnd-envio-err' : 'cpnd-envio-pen';
+        return `<div class="cpnd-dest-row">
+          <span class="${cl}">${ic}</span>
+          <div>
+            <div style="font-size:.76rem;font-weight:600">${esc(d.nombre)||d.telefono}</div>
+            ${d.error ? `<div style="font-size:.6rem;color:var(--red);margin-top:1px">${esc(d.error)}</div>` : ''}
+          </div>
+          <div style="text-align:right">
+            <div style="font-family:monospace;font-size:.62rem;color:var(--txt3)">${d.telefono}</div>
+            ${d.enviado_at ? `<div style="font-size:.58rem;color:var(--txt3)">${fmtTime(d.enviado_at)}</div>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  body.innerHTML = statsHtml + progHtml + msgHtml + destHtml;
+
+  // Si está enviando, refrescar automáticamente
+  if (c.estado === 'enviando') {
+    setTimeout(() => {
+      if (document.getElementById('modal-campana-detail').style.display === 'flex') {
+        abrirDetalleCampana(c.id);
+      }
+    }, 3000);
+  }
+}
 
 </script>
 </body>

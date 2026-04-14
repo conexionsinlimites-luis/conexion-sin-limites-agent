@@ -336,26 +336,32 @@ async def api_leads():
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT nombre, telefono, estado, score, subproducto,
-                   ultima_interaccion, objeciones, lead_resumen, notas
+                   ultima_interaccion, objeciones, lead_resumen, notas,
+                   tags, created_at
             FROM leads
             ORDER BY ultima_interaccion DESC
-            LIMIT 20
+            LIMIT 500
         """)
-        leads = [
-            {
+        leads = []
+        for r in rows:
+            try:
+                tags = json.loads(r["tags"] or "[]")
+            except Exception:
+                tags = []
+            leads.append({
                 "nombre":             r["nombre"] or "Desconocido",
                 "telefono":           r["telefono"],
                 "estado":             r["estado"],
-                "score":              r["score"],
+                "score":              r["score"] or 0,
                 "subproducto":        r["subproducto"] or "—",
-                "ultima_interaccion": str(r["ultima_interaccion"]),
+                "ultima_interaccion": str(r["ultima_interaccion"]) if r["ultima_interaccion"] else "",
+                "created_at":         str(r["created_at"]) if r["created_at"] else "",
                 "color":              COLOR_ESTADO.get(r["estado"], "#888"),
                 "prioridad":          calcular_prioridad(r["estado"], r["score"] or 0),
                 "resumen":            r["lead_resumen"] or "",
                 "notas":              r["notas"] or "",
-            }
-            for r in rows
-        ]
+                "tags":               tags,
+            })
     return JSONResponse({"leads": leads})
 
 
@@ -363,36 +369,53 @@ async def api_leads():
 
 @router.get("/api/leads/export-csv")
 async def export_leads_csv():
-    """Descarga todos los leads como archivo CSV (compatible con Excel)."""
+    """Descarga todos los leads como archivo CSV avanzado (compatible con Excel)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT nombre, telefono, estado, score, subproducto,
-                   notas, direccion, comuna,
-                   ultima_interaccion, created_at
-            FROM leads
-            ORDER BY ultima_interaccion DESC NULLS LAST
+            SELECT l.nombre, l.telefono, l.estado, l.score, l.subproducto,
+                   l.tags, l.notas, l.lead_resumen, l.direccion, l.comuna,
+                   l.created_at, l.ultima_interaccion,
+                   COUNT(h.id) AS total_mensajes
+            FROM leads l
+            LEFT JOIN historial_mensajes h
+                   ON SPLIT_PART(REPLACE(h.telefono,' ',''),'@',1)
+                    = SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1)
+            GROUP BY l.id, l.nombre, l.telefono, l.estado, l.score,
+                     l.subproducto, l.tags, l.notas, l.lead_resumen,
+                     l.direccion, l.comuna, l.created_at, l.ultima_interaccion
+            ORDER BY l.ultima_interaccion DESC NULLS LAST
         """)
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
         "Nombre", "Teléfono", "Estado", "Score", "Producto",
-        "Notas", "Dirección", "Comuna",
-        "Última interacción", "Creado"
+        "Tags", "Notas", "Resumen IA",
+        "Dirección", "Comuna",
+        "Primer contacto", "Última interacción",
+        "Total mensajes",
     ])
     for r in rows:
+        try:
+            tags_list = json.loads(r["tags"] or "[]")
+            tags_str  = ", ".join(tags_list)
+        except Exception:
+            tags_str = ""
         writer.writerow([
             r["nombre"] or "",
             r["telefono"] or "",
             r["estado"] or "",
             r["score"] if r["score"] is not None else 0,
             r["subproducto"] or "",
+            tags_str,
             r["notas"] or "",
+            r["lead_resumen"] or "",
             r["direccion"] or "",
             r["comuna"] or "",
-            str(r["ultima_interaccion"]) if r["ultima_interaccion"] else "",
             str(r["created_at"]) if r["created_at"] else "",
+            str(r["ultima_interaccion"]) if r["ultima_interaccion"] else "",
+            r["total_mensajes"] or 0,
         ])
 
     # utf-8-sig incluye BOM para que Excel lo abra sin problemas de tildes
@@ -403,6 +426,25 @@ async def export_leads_csv():
         media_type="text/csv; charset=utf-8-sig",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ── API: tags de un lead ──────────────────────────────────────────────────────
+
+@router.patch("/api/leads/{telefono}/tags")
+async def actualizar_tags_lead(telefono: str, request: Request):
+    """Reemplaza la lista de tags de un lead."""
+    body = await request.json()
+    tags = body.get("tags", [])
+    if not isinstance(tags, list):
+        tags = []
+    tags_clean = [str(t).strip()[:50] for t in tags if str(t).strip()][:20]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE leads SET tags = $1 WHERE telefono = $2",
+            json.dumps(tags_clean, ensure_ascii=False), telefono
+        )
+    return JSONResponse({"ok": True, "tags": tags_clean})
 
 
 # ── API: guardar notas de un lead ──────────────────────────────────────────────
@@ -431,7 +473,7 @@ async def lead_detail(telefono: str):
         row = await conn.fetchrow("""
             SELECT nombre, telefono, estado, score, subproducto,
                    notas, lead_resumen, direccion, comuna,
-                   objeciones, mensajes_en_estado,
+                   objeciones, mensajes_en_estado, tags,
                    ultima_interaccion, created_at
             FROM leads WHERE telefono = $1
         """, telefono)
@@ -441,6 +483,10 @@ async def lead_detail(telefono: str):
             objeciones = json.loads(row["objeciones"] or "[]")
         except Exception:
             objeciones = []
+        try:
+            tags = json.loads(row["tags"] or "[]")
+        except Exception:
+            tags = []
         return JSONResponse({
             "nombre":             row["nombre"] or "Desconocido",
             "telefono":           row["telefono"],
@@ -452,6 +498,7 @@ async def lead_detail(telefono: str):
             "direccion":          row["direccion"] or "—",
             "comuna":             row["comuna"] or "—",
             "objeciones":         objeciones,
+            "tags":               tags,
             "mensajes_en_estado": row["mensajes_en_estado"] or 0,
             "ultima_interaccion": str(row["ultima_interaccion"]) if row["ultima_interaccion"] else "—",
             "created_at":         str(row["created_at"]) if row["created_at"] else "—",
@@ -611,7 +658,7 @@ async def api_conversations():
             # Fix 2b: también normalizar teléfono en leads para el lookup
             crm_rows = await conn.fetch("""
                 SELECT SPLIT_PART(REPLACE(telefono, ' ', ''), '@', 1) AS telefono,
-                       nombre, estado, score
+                       nombre, estado, score, tags
                 FROM leads
                 WHERE SPLIT_PART(REPLACE(telefono, ' ', ''), '@', 1) = ANY($1)
             """, telefonos)
@@ -626,11 +673,16 @@ async def api_conversations():
             score  = int(lead.get("score") or 0)
             _n     = (lead.get("nombre") or "").strip()
             nombre = _n if (_n and _n.lower() not in ("desconocido", "cliente", "unknown", "")) else tel
+            try:
+                tags = json.loads(lead.get("tags") or "[]")
+            except Exception:
+                tags = []
             conversaciones.append({
                 "telefono":         tel,
                 "nombre":           nombre,
                 "estado":           estado,
                 "score":            score,
+                "tags":             tags,
                 "ultima_actividad": str(f["ultima_actividad"]),
                 "ultimo_mensaje":   str(f["ultimo_mensaje"] or ""),
                 "ultimo_rol":       str(f["ultimo_rol"] or "user"),
@@ -1245,7 +1297,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .leads-list { display: flex; flex-direction: column; gap: .5rem; max-height: 320px; overflow-y: auto; }
 
   .lead-row {
-    display: grid; grid-template-columns: 1.4rem 1fr auto auto auto auto auto;
+    display: grid; grid-template-columns: 1.4rem 1fr auto auto auto auto auto auto;
     align-items: center; gap: .75rem;
     background: rgba(255,255,255,0.02);
     border-radius: 10px; padding: .65rem 1rem;
@@ -1609,6 +1661,73 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   }
   .btn-notas:hover  { opacity: .9; background: rgba(168,85,247,0.12); }
   .btn-notas.activo { opacity: .85; }
+  .btn-tags {
+    background: none; border: none; cursor: pointer;
+    font-size: .8rem; padding: .1rem .2rem; opacity: .3;
+    transition: opacity .2s; line-height: 1; border-radius: 4px;
+  }
+  .btn-tags:hover  { opacity: .9; background: rgba(245,158,11,.12); }
+  .btn-tags.activo { opacity: .9; }
+
+  /* ── Tag chips ── */
+  .tag-chip {
+    display: inline-flex; align-items: center;
+    padding: .18rem .55rem; border-radius: 20px;
+    font-size: .62rem; font-weight: 700; letter-spacing: .04em;
+    white-space: nowrap; cursor: default;
+  }
+  .tag-chip-sm {
+    display: inline-flex; align-items: center;
+    padding: .1rem .38rem; border-radius: 20px;
+    font-size: .55rem; font-weight: 700; letter-spacing: .03em;
+    white-space: nowrap;
+  }
+  .lead-tags { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .25rem; }
+
+  /* ── Filter bar ── */
+  .filter-bar {
+    display: flex; flex-wrap: wrap; gap: .4rem;
+    padding: .55rem 0 .4rem; margin-bottom: .4rem;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  .filter-input, .filter-select, .filter-date {
+    background: rgba(255,255,255,.04); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--txt); padding: .3rem .6rem;
+    font-family: 'Space Grotesk', sans-serif; font-size: .68rem;
+    outline: none; transition: border-color .2s;
+  }
+  .filter-input  { flex: 1; min-width: 140px; }
+  .filter-select { min-width: 120px; cursor: pointer; }
+  .filter-date   { min-width: 110px; }
+  .filter-score  {
+    background: rgba(255,255,255,.04); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--txt); padding: .3rem .5rem;
+    font-family: 'Space Grotesk', sans-serif; font-size: .68rem;
+    width: 68px; outline: none; transition: border-color .2s;
+  }
+  .filter-input:focus, .filter-select:focus,
+  .filter-date:focus, .filter-score:focus { border-color: rgba(0,212,255,.5); }
+  .filter-select option { background: #111; }
+  .filter-clear {
+    background: rgba(255,34,51,.07); border: 1px solid rgba(255,34,51,.2);
+    color: rgba(255,80,80,.8); border-radius: 8px; padding: .3rem .65rem;
+    font-size: .65rem; font-weight: 700; cursor: pointer;
+    font-family: 'Space Grotesk', sans-serif; transition: background .15s;
+    white-space: nowrap;
+  }
+  .filter-clear:hover { background: rgba(255,34,51,.15); }
+  .filter-count { font-size: .6rem; color: var(--txt3); align-self: center; white-space: nowrap; }
+
+  /* ── Tags modal ── */
+  .tags-predefined { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+  .tag-toggle {
+    padding: .28rem .75rem; border-radius: 20px; cursor: pointer;
+    font-size: .7rem; font-weight: 700; letter-spacing: .04em;
+    transition: opacity .15s, transform .1s; border: 1px solid transparent;
+    opacity: .4;
+  }
+  .tag-toggle.activo { opacity: 1; transform: scale(1.05); }
+  .tag-toggle:hover  { opacity: .85; }
 
   /* ── Modal: chat completo ── */
   .modal-overlay {
@@ -2154,10 +2273,34 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" style="overflow:visible">
       <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem">
-        <span>Leads recientes</span>
-        <button onclick="exportarCSV()" id="btn-export-csv" style="background:rgba(0,212,255,.07);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.62rem;font-weight:700;letter-spacing:.06em;padding:.3rem .7rem;border-radius:8px;cursor:pointer;transition:background .15s;white-space:nowrap" onmouseover="this.style.background='rgba(0,212,255,.18)'" onmouseout="this.style.background='rgba(0,212,255,.07)'">&#8659; Exportar CSV</button>
+        <span>Leads <span id="leads-count-badge" style="font-size:.6rem;color:var(--txt3);font-weight:400;margin-left:.3rem"></span></span>
+        <button onclick="exportarCSV()" id="btn-export-csv" style="background:rgba(0,212,255,.07);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.62rem;font-weight:700;letter-spacing:.06em;padding:.3rem .7rem;border-radius:8px;cursor:pointer;transition:background .15s;white-space:nowrap" onmouseover="this.style.background='rgba(0,212,255,.18)'" onmouseout="this.style.background='rgba(0,212,255,.07)'">&#8659; CSV</button>
+      </div>
+      <!-- Filtros + búsqueda -->
+      <div class="filter-bar">
+        <input  type="text"   id="f-buscar"  class="filter-input"  placeholder="&#128269; Buscar nombre o teléfono..." oninput="filtrarLeads()">
+        <select id="f-estado" class="filter-select" onchange="filtrarLeads()">
+          <option value="">Todos los estados</option>
+          <option value="nuevo">Nuevo</option>
+          <option value="contactado">Contactado</option>
+          <option value="interesado">Interesado</option>
+          <option value="tibio">Tibio</option>
+          <option value="caliente">Caliente</option>
+          <option value="direccion_obtenida">Dirección obtenida</option>
+          <option value="listo_para_cierre">Listo cierre</option>
+          <option value="cerrado">Cerrado</option>
+          <option value="seguimiento">Seguimiento</option>
+        </select>
+        <select id="f-tag" class="filter-select" onchange="filtrarLeads()">
+          <option value="">Todos los tags</option>
+        </select>
+        <input  type="number" id="f-score" class="filter-score" placeholder="Score ≥" min="0" max="100" oninput="filtrarLeads()">
+        <input  type="date"   id="f-desde" class="filter-date"  onchange="filtrarLeads()" title="Desde (primer contacto)">
+        <input  type="date"   id="f-hasta" class="filter-date"  onchange="filtrarLeads()" title="Hasta (primer contacto)">
+        <button class="filter-clear" onclick="limpiarFiltros()">&#10005; Limpiar</button>
+        <span class="filter-count" id="f-count"></span>
       </div>
       <div class="leads-list" id="leads-list">
         <div class="empty">Sin datos</div>
@@ -2323,6 +2466,41 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       <div style="display:flex;gap:.75rem;justify-content:flex-end">
         <button onclick="cerrarNotasModal()" style="background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.75rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer">Cancelar</button>
         <button id="notas-save-btn" onclick="guardarNotas()" style="background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.4);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.75rem;font-weight:700;padding:.5rem 1.4rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.25)'" onmouseout="this.style.background='rgba(0,212,255,.12)'">Guardar notas</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Tags del lead -->
+<div class="modal-overlay" id="modal-tags" onclick="if(event.target===this)cerrarTagsModal()">
+  <div class="modal-box" style="max-width:500px">
+    <div class="modal-header">
+      <div>
+        <div id="tags-modal-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">TAGS</div>
+        <div style="font-size:.65rem;color:var(--txt3);margin-top:.25rem">Haz clic para activar / desactivar</div>
+      </div>
+      <button class="modal-close" onclick="cerrarTagsModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div style="padding:1.4rem 1.75rem;display:flex;flex-direction:column;gap:1rem">
+      <div>
+        <div style="font-size:.65rem;color:var(--txt3);font-weight:700;letter-spacing:.08em;margin-bottom:.55rem">SUGERIDOS</div>
+        <div class="tags-predefined" id="tags-predefined"></div>
+      </div>
+      <div>
+        <div style="font-size:.65rem;color:var(--txt3);font-weight:700;letter-spacing:.08em;margin-bottom:.4rem">AGREGAR TAG PERSONALIZADO</div>
+        <div style="display:flex;gap:.5rem">
+          <input id="tags-custom-input" type="text" maxlength="50"
+            placeholder="Escribe un tag..."
+            style="flex:1;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:8px;color:var(--txt);padding:.4rem .75rem;font-family:'Space Grotesk',sans-serif;font-size:.78rem;outline:none"
+            onfocus="this.style.borderColor='rgba(0,212,255,.5)'"
+            onblur="this.style.borderColor='var(--border)'"
+            onkeydown="if(event.key==='Enter')agregarTagPersonalizado()">
+          <button onclick="agregarTagPersonalizado()" style="background:rgba(0,212,255,.1);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.72rem;font-weight:700;padding:.4rem .9rem;border-radius:8px;cursor:pointer">+ Agregar</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:.75rem;justify-content:flex-end;border-top:1px solid rgba(255,255,255,.06);padding-top:.75rem">
+        <button onclick="cerrarTagsModal()" style="background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.75rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer">Cancelar</button>
+        <button id="tags-save-btn" onclick="guardarTags()" style="background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.4);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.75rem;font-weight:700;padding:.5rem 1.4rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.25)'" onmouseout="this.style.background='rgba(0,212,255,.12)'">Guardar tags</button>
       </div>
     </div>
   </div>
@@ -2532,32 +2710,166 @@ function renderEmbudo(conv) {
     document.getElementById(`f-cnt-${i}`).innerHTML = e.den>0 ? `<strong>${e.num}</strong> de ${e.den} leads` : 'sin datos suficientes';
   });
 }
+let _leadsData = [];
+
 async function actualizarLeads() {
   const r = await fetch('/api/leads'); const d = await r.json();
+  _leadsData = d.leads || [];
+  // Poblar select de tags con opciones únicas
+  const tagSelect = document.getElementById('f-tag');
+  if (tagSelect) {
+    const allTags = [...new Set(_leadsData.flatMap(l => l.tags || []))].sort();
+    const curVal  = tagSelect.value;
+    tagSelect.innerHTML = '<option value="">Todos los tags</option>' +
+      allTags.map(t => `<option value="${esc(t)}"${t===curVal?' selected':''}>${esc(t)}</option>`).join('');
+  }
+  filtrarLeads();
+}
+
+function filtrarLeads() {
+  const buscar = (document.getElementById('f-buscar')?.value || '').toLowerCase().trim();
+  const estado = document.getElementById('f-estado')?.value || '';
+  const tag    = document.getElementById('f-tag')?.value    || '';
+  const scoreMin = parseInt(document.getElementById('f-score')?.value || '0', 10) || 0;
+  const desde  = document.getElementById('f-desde')?.value || '';
+  const hasta  = document.getElementById('f-hasta')?.value || '';
+
+  const filtrados = _leadsData.filter(l => {
+    if (buscar && !( (l.nombre||'').toLowerCase().includes(buscar) || l.telefono.includes(buscar) )) return false;
+    if (estado && l.estado !== estado) return false;
+    if (tag    && !(l.tags||[]).includes(tag)) return false;
+    if (scoreMin > 0 && (l.score || 0) < scoreMin) return false;
+    if (desde && l.created_at && l.created_at.slice(0,10) < desde) return false;
+    if (hasta && l.created_at && l.created_at.slice(0,10) > hasta) return false;
+    return true;
+  });
+
+  const countEl = document.getElementById('f-count');
+  if (countEl) countEl.textContent = filtrados.length < _leadsData.length
+    ? `${filtrados.length} de ${_leadsData.length}`
+    : `${_leadsData.length} leads`;
+
   const el = document.getElementById('leads-list');
-  if (!d.leads.length) { el.innerHTML = '<div class="empty">Sin leads registrados</div>'; return; }
-  el.innerHTML = d.leads.map(l => {
+  if (!filtrados.length) { el.innerHTML = '<div class="empty">Sin leads que coincidan</div>'; return; }
+
+  const TAG_COLORS = ['#00D4FF','#c084fc','#f59e0b','#22c55e','#ef4444','#3b82f6','#f97316','#10b981'];
+  function tagColor(t) { let h=0; for(let i=0;i<t.length;i++) h=(Math.imul(31,h)+t.charCodeAt(i))|0; return TAG_COLORS[Math.abs(h)%TAG_COLORS.length]; }
+
+  el.innerHTML = filtrados.map(l => {
     const safeTel    = l.telefono.replace(/['"<>&]/g, '');
     const safeNombre = esc(l.nombre);
     const notasIcon  = l.notas
       ? `<button class="btn-notas activo" title="Ver/editar notas" onclick="abrirNotasModal('${safeTel}','${safeNombre}',this.dataset.notas)" data-notas="${esc(l.notas)}">&#128221;</button>`
       : `<button class="btn-notas"        title="Agregar nota"     onclick="abrirNotasModal('${safeTel}','${safeNombre}','')"                                              >&#128221;</button>`;
     const detailIcon = `<button class="btn-detail" title="Ver resumen IA" onclick="abrirLeadDetail('${safeTel}')">&#128270;</button>`;
+    const tagsIcon   = `<button class="btn-tags${l.tags&&l.tags.length?' activo':''}" title="Editar tags" onclick="abrirTagsModal('${safeTel}','${safeNombre}')">&#127991;</button>`;
+    const tagsHtml   = l.tags && l.tags.length
+      ? `<div class="lead-tags">${l.tags.map(t=>`<span class="tag-chip-sm" style="background:${tagColor(t)}22;color:${tagColor(t)};border:1px solid ${tagColor(t)}55">${esc(t)}</span>`).join('')}</div>`
+      : '';
     return `
     <div class="lead-row fade-in" style="border-left-color:${l.color};box-shadow:inset 2px 0 8px ${l.color}22">
       <div class="lead-priority" title="${prioridadLabel(l.prioridad)}">${l.prioridad}</div>
       <div style="min-width:0">
         <div class="lead-name">${esc(l.nombre)}</div>
         <div class="lead-phone">${l.telefono} &middot; ${l.subproducto}</div>
+        ${tagsHtml}
         ${l.resumen ? `<div class="lead-resumen" title="${esc(l.resumen)}">${esc(l.resumen)}</div>` : ''}
       </div>
       ${estadoBadge(l.estado,l.color)}
       <div class="lead-score">${l.score}<span style="font-size:.55rem;opacity:.6">pts</span></div>
       ${detailIcon}
       ${notasIcon}
+      ${tagsIcon}
       ${botonAccion(l)}
     </div>`;
   }).join('');
+}
+
+function limpiarFiltros() {
+  ['f-buscar','f-score'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  ['f-estado','f-tag'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  ['f-desde','f-hasta'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  filtrarLeads();
+}
+
+// =========================================================================
+// MODAL — Tags del lead
+// =========================================================================
+const TAGS_PREDEFINIDOS = [
+  'Interesado','Precio alto','Llamar después','Sin respuesta','Cerrado',
+  'DirecTV','Movistar','VTR','Claro','No tiene internet','Tiene contrato',
+];
+const TAG_COLORS_MODAL = ['#00D4FF','#c084fc','#f59e0b','#22c55e','#ef4444','#3b82f6','#f97316','#10b981'];
+function _tagColorModal(t){let h=0;for(let i=0;i<t.length;i++)h=(Math.imul(31,h)+t.charCodeAt(i))|0;return TAG_COLORS_MODAL[Math.abs(h)%TAG_COLORS_MODAL.length];}
+
+let _tagsTelActivo = '';
+let _tagsActivos   = [];
+
+function abrirTagsModal(telefono, nombre) {
+  _tagsTelActivo = telefono;
+  // Obtener tags actuales del lead en _leadsData
+  const lead = _leadsData.find(l => l.telefono === telefono);
+  _tagsActivos = lead ? [...(lead.tags || [])] : [];
+  document.getElementById('tags-modal-title').textContent = 'TAGS — ' + nombre;
+  document.getElementById('tags-custom-input').value = '';
+  renderTagsPredefinidos();
+  document.getElementById('modal-tags').style.display = 'flex';
+}
+
+function cerrarTagsModal() {
+  document.getElementById('modal-tags').style.display = 'none';
+  _tagsTelActivo = '';
+}
+
+function renderTagsPredefinidos() {
+  // Combinar predefinidos con tags personalizados activos
+  const todos = [...new Set([...TAGS_PREDEFINIDOS, ..._tagsActivos])];
+  const el = document.getElementById('tags-predefined');
+  el.innerHTML = todos.map(t => {
+    const c      = _tagColorModal(t);
+    const activo = _tagsActivos.includes(t);
+    return `<button class="tag-toggle${activo?' activo':''}"
+      style="background:${c}${activo?'33':'11'};color:${c};border:1px solid ${c}${activo?'66':'33'}"
+      onclick="toggleTag('${esc(t)}')">${esc(t)}</button>`;
+  }).join('');
+}
+
+function toggleTag(tag) {
+  if (_tagsActivos.includes(tag)) {
+    _tagsActivos = _tagsActivos.filter(t => t !== tag);
+  } else {
+    if (_tagsActivos.length >= 20) return;
+    _tagsActivos.push(tag);
+  }
+  renderTagsPredefinidos();
+}
+
+function agregarTagPersonalizado() {
+  const input = document.getElementById('tags-custom-input');
+  const val   = (input.value || '').trim().slice(0, 50);
+  if (!val || _tagsActivos.includes(val) || _tagsActivos.length >= 20) { input.value=''; return; }
+  _tagsActivos.push(val);
+  input.value = '';
+  renderTagsPredefinidos();
+}
+
+async function guardarTags() {
+  if (!_tagsTelActivo) return;
+  const btn = document.getElementById('tags-save-btn');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try {
+    const r = await fetch('/api/leads/' + encodeURIComponent(_tagsTelActivo) + '/tags', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags: _tagsActivos }),
+    });
+    if (r.ok) {
+      cerrarTagsModal();
+      await actualizarLeads();
+    } else {
+      btn.textContent = 'Error — reintentar'; btn.disabled = false;
+    }
+  } catch(_) { btn.textContent = 'Error — reintentar'; btn.disabled = false; }
 }
 function exportarCSV() {
   const btn = document.getElementById('btn-export-csv');
@@ -2724,6 +3036,22 @@ function renderLeadDetail(d) {
       <div class="ld-section-title">Objeciones detectadas</div>
       ${objHtml}
     </div>
+
+    ${d.tags && d.tags.length ? `
+    <div class="ld-section">
+      <div class="ld-section-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Tags</span>
+        <button class="ld-regenerar-btn" onclick="cerrarLeadDetail();abrirTagsModal('${d.telefono.replace(/['"<>&]/g,'')}','${(d.nombre||'').replace(/['"<>&]/g,'')}')">&#9998; Editar</button>
+      </div>
+      <div class="lead-tags" style="margin-top:.4rem">${d.tags.map(t=>{const c=(['#00D4FF','#c084fc','#f59e0b','#22c55e','#ef4444','#3b82f6','#f97316','#10b981'])[Math.abs([...t].reduce((h,ch)=>(Math.imul(31,h)+ch.charCodeAt(0))|0,0))%8];return`<span class="tag-chip" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(t)}</span>`}).join('')}</div>
+    </div>` : `
+    <div class="ld-section">
+      <div class="ld-section-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Tags</span>
+        <button class="ld-regenerar-btn" onclick="cerrarLeadDetail();abrirTagsModal('${d.telefono.replace(/['"<>&]/g,'')}','${(d.nombre||'').replace(/['"<>&]/g,'')}')">+ Agregar</button>
+      </div>
+      <div style="font-size:.72rem;color:var(--txt3)">Sin tags asignados</div>
+    </div>`}
 
     ${d.notas ? `
     <div class="ld-section">
@@ -2989,6 +3317,11 @@ function renderConvList() {
     const toggleBtn = c.modo_humano
       ? `<button class="wa-quick-liberar" title="Liberar IA" onclick="event.stopPropagation();quickLiberar('${safeTel}')">&#9646;&#9646;</button>`
       : `<button class="wa-quick-tomar"   title="Tomar lead" onclick="event.stopPropagation();quickTomar('${safeTel}',this)">&#128100;</button>`;
+    const TC=['#00D4FF','#c084fc','#f59e0b','#22c55e','#ef4444','#3b82f6','#f97316','#10b981'];
+    const tc=t=>{let h=0;for(let i=0;i<t.length;i++)h=(Math.imul(31,h)+t.charCodeAt(i))|0;return TC[Math.abs(h)%TC.length];};
+    const tagsHtml = c.tags && c.tags.length
+      ? `<div class="lead-tags" style="margin-top:.2rem">${c.tags.slice(0,3).map(t=>`<span class="tag-chip-sm" style="background:${tc(t)}22;color:${tc(t)};border:1px solid ${tc(t)}55">${esc(t)}</span>`).join('')}${c.tags.length>3?`<span class="tag-chip-sm" style="background:rgba(255,255,255,.05);color:var(--txt3)">+${c.tags.length-3}</span>`:''}</div>`
+      : '';
     return `
     <div class="wa-conv-item${activo}" id="wconv-${safeTel}" onclick="seleccionarContacto('${safeTel}')">
       <div class="wa-conv-avatar" style="background:${color}22;color:${color};border:1.5px solid ${color}44">${inicial}</div>
@@ -3002,6 +3335,7 @@ function renderConvList() {
           <span class="wa-conv-preview">${preview}</span>
           <span class="wa-conv-badges"><span class="wa-conv-score" style="color:${scoreColor}">${score}</span>${badge}${toggleBtn}</span>
         </div>
+        ${tagsHtml}
       </div>
     </div>`;
   }).join('');

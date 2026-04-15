@@ -23,7 +23,7 @@ from agent.transcriber import transcribir
 from agent.config import PORT, ENVIRONMENT, TELEFONO_OWNER, MAKE_WEBHOOK_TOKEN
 import agent.crm as crm
 from agent.scheduler import iniciar_scheduler
-from agent.dashboard import router as dashboard_router, broadcast_event
+from agent.dashboard import router as dashboard_router, public_router as dashboard_public_router, broadcast_event
 from agent.make_integration import enviar_a_make
 from agent.database import get_pool, close_pool
 from agent.campanas import inicializar_campanas
@@ -89,6 +89,7 @@ app = FastAPI(
 )
 
 app.include_router(dashboard_router)
+app.include_router(dashboard_public_router)
 
 
 @app.get("/")

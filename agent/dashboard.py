@@ -11,15 +11,17 @@ Expone tres rutas:
 
 import asyncio
 import csv
+import hashlib
+import hmac
 import io
 import json
 import logging
 import secrets
+import time
 import traceback
 from datetime import datetime, date
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from agent.config import TELEFONO_OWNER, DASHBOARD_USER, DASHBOARD_PASSWORD
 from agent.database import get_pool
@@ -29,35 +31,68 @@ from agent.memory import guardar_mensaje as _guardar_memoria
 
 logger = logging.getLogger("agentkit")
 
-# ── Autenticación básica del dashboard ────────────────────────────────────────
-_http_basic = HTTPBasic()
+# ── Autenticación por cookie firmada ──────────────────────────────────────────
+_COOKIE_NAME = "vcrm_session"
+_COOKIE_DAYS = 30
 
 
-def _verificar_auth(credentials: HTTPBasicCredentials = Depends(_http_basic)):
-    """Valida usuario y contraseña contra las variables de entorno."""
+def _firmar_token(ts: str) -> str:
+    """HMAC-SHA256 del timestamp usando DASHBOARD_PASSWORD como clave."""
+    return hmac.new(
+        DASHBOARD_PASSWORD.encode("utf-8"),
+        ts.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _generar_cookie() -> str:
+    """Genera un token firmado: '{timestamp}.{hmac}'."""
+    ts = str(int(time.time()))
+    return f"{ts}.{_firmar_token(ts)}"
+
+
+def _es_sesion_valida(token: str) -> bool:
+    """Verifica firma y expiración (30 días) del token de sesión."""
+    if not DASHBOARD_PASSWORD or not token:
+        return False
+    try:
+        ts, sig = token.split(".", 1)
+        if time.time() - int(ts) > _COOKIE_DAYS * 86400:
+            return False
+        return hmac.compare_digest(sig, _firmar_token(ts))
+    except Exception:
+        return False
+
+
+def _verificar_auth(request: Request):
+    """
+    Dependency para rutas protegidas.
+    - API paths (/api/*): devuelve 401 JSON si no hay sesión válida.
+    - HTML paths: redirige a /login con 307.
+    """
     if not DASHBOARD_PASSWORD:
-        # Sin contraseña configurada en Railway, acceso bloqueado por seguridad
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Dashboard no disponible: configura DASHBOARD_PASSWORD en Railway.",
         )
-    ok_user = secrets.compare_digest(
-        credentials.username.encode("utf-8"),
-        DASHBOARD_USER.encode("utf-8"),
-    )
-    ok_pass = secrets.compare_digest(
-        credentials.password.encode("utf-8"),
-        DASHBOARD_PASSWORD.encode("utf-8"),
-    )
-    if not (ok_user and ok_pass):
+    token = request.cookies.get(_COOKIE_NAME, "")
+    if not _es_sesion_valida(token):
+        if request.url.path.startswith("/api/"):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Sesión expirada. Recarga el dashboard.",
+            )
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Credenciales incorrectas",
-            headers={"WWW-Authenticate": "Basic realm=\"Valentina CRM\""},
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            headers={"Location": "/login"},
         )
 
 
+# Router protegido (todas las rutas requieren sesión válida)
 router = APIRouter(dependencies=[Depends(_verificar_auth)])
+
+# Router público (login / logout — sin autenticación)
+public_router = APIRouter()
 
 # ── SSE broadcast system ───────────────────────────────────────────────────────
 _sse_queues: set[asyncio.Queue] = set()
@@ -2416,6 +2451,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <div class="header-right">
     <div class="live-badge"><div class="live-dot"></div>EN VIVO</div>
     <div id="last-update">Iniciando...</div>
+    <a href="/logout" style="color:var(--txt2);font-size:.65rem;font-weight:600;letter-spacing:.06em;text-decoration:none;text-transform:uppercase;padding:.3rem .7rem;border:1px solid var(--border);border-radius:14px;transition:color .2s" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--txt2)'">&#x2715; Salir</a>
   </div>
   <div class="scan-line"></div>
 </header>
@@ -4434,3 +4470,196 @@ function renderDetalleCampana(c, dests) {
 </body>
 </html>
 """
+
+# ── Login page ─────────────────────────────────────────────────────────────────
+
+_HTML_LOGIN = """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Valentina CRM — Acceso</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" crossorigin>
+<style>
+  :root {
+    --bg: #000;
+    --card: #0a0a0a;
+    --border: #1a1a1a;
+    --neon: #00D4FF;
+    --red: #FF2233;
+    --txt: #e8e8e8;
+    --txt2: #888;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--txt);
+    font-family: 'Space Grotesk', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* grid de líneas de fondo */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .card {
+    position: relative;
+    z-index: 1;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--neon);
+    border-radius: 12px;
+    padding: 2.5rem 2rem;
+    width: 360px;
+    box-shadow: 0 0 40px rgba(0,212,255,.08);
+  }
+  .logo {
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+  .logo h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 900;
+    letter-spacing: .12em;
+    color: var(--neon);
+    text-transform: uppercase;
+  }
+  .logo p {
+    font-size: .7rem;
+    color: var(--txt2);
+    margin-top: .3rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  label {
+    display: block;
+    font-size: .72rem;
+    font-weight: 600;
+    color: var(--txt2);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: .4rem;
+  }
+  input {
+    width: 100%;
+    background: #111;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--txt);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: .88rem;
+    padding: .65rem .9rem;
+    outline: none;
+    transition: border-color .2s;
+  }
+  input:focus { border-color: var(--neon); }
+  .field { margin-bottom: 1.1rem; }
+  .btn {
+    width: 100%;
+    background: var(--neon);
+    color: #000;
+    border: none;
+    border-radius: 6px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .1em;
+    padding: .75rem;
+    cursor: pointer;
+    margin-top: .5rem;
+    transition: opacity .15s;
+    text-transform: uppercase;
+  }
+  .btn:hover { opacity: .85; }
+  .btn:active { opacity: .7; }
+  .error {
+    background: rgba(255,34,51,.12);
+    border: 1px solid rgba(255,34,51,.4);
+    border-radius: 6px;
+    color: #ff6677;
+    font-size: .78rem;
+    padding: .6rem .8rem;
+    margin-bottom: 1.2rem;
+    display: none;
+  }
+  .error.show { display: block; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <h1>Valentina CRM</h1>
+    <p>Conexión Sin Límites</p>
+  </div>
+  <div class="error" id="err">Usuario o contraseña incorrectos.</div>
+  <form method="POST" action="/login">
+    <div class="field">
+      <label for="user">Usuario</label>
+      <input id="user" name="username" type="text" autocomplete="username" required autofocus>
+    </div>
+    <div class="field">
+      <label for="pass">Contraseña</label>
+      <input id="pass" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <button class="btn" type="submit">Ingresar</button>
+  </form>
+</div>
+<script>
+  // Mostrar error si viene ?error=1 en la URL
+  if (location.search.includes('error=1')) {
+    document.getElementById('err').classList.add('show');
+  }
+</script>
+</body>
+</html>"""
+
+
+# ── Rutas públicas (sin autenticación) ────────────────────────────────────────
+
+@public_router.get("/login", response_class=HTMLResponse)
+async def login_page():
+    return HTMLResponse(content=_HTML_LOGIN)
+
+
+@public_router.post("/login")
+async def login_submit(request: Request):
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    password = (form.get("password") or "").strip()
+
+    user_ok = secrets.compare_digest(username, DASHBOARD_USER)
+    pass_ok = DASHBOARD_PASSWORD and secrets.compare_digest(password, DASHBOARD_PASSWORD)
+
+    if not (user_ok and pass_ok):
+        return RedirectResponse(url="/login?error=1", status_code=303)
+
+    token = _generar_cookie()
+    response = RedirectResponse(url="/dashboard", status_code=303)
+    response.set_cookie(
+        key=_COOKIE_NAME,
+        value=token,
+        max_age=_COOKIE_DAYS * 86400,
+        httponly=True,
+        samesite="lax",
+        secure=False,   # Railway usa HTTPS termination — cookie llega por HTTP internamente
+    )
+    return response
+
+
+@public_router.get("/logout")
+async def logout():
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(key=_COOKIE_NAME)
+    return response
+

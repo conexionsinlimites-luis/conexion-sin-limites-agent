@@ -3283,8 +3283,8 @@ function limpiarFiltros() {
 // MODAL — Tags del lead
 // =========================================================================
 const TAGS_PREDEFINIDOS = [
-  'Interesado','Precio alto','Llamar después','Sin respuesta','Cerrado',
-  'DirecTV','Movistar','VTR','Claro','No tiene internet','Tiene contrato',
+  'Interesado','Sin cobertura','Tiene contrato','Precio alto',
+  'Llamar después','No contesta','Cerrado',
 ];
 const TAG_COLORS_MODAL = ['#00D4FF','#c084fc','#f59e0b','#22c55e','#ef4444','#3b82f6','#f97316','#10b981'];
 function _tagColorModal(t){let h=0;for(let i=0;i<t.length;i++)h=(Math.imul(31,h)+t.charCodeAt(i))|0;return TAG_COLORS_MODAL[Math.abs(h)%TAG_COLORS_MODAL.length];}
@@ -3351,8 +3351,14 @@ async function guardarTags() {
       body: JSON.stringify({ tags: _tagsActivos }),
     });
     if (r.ok) {
+      const telGuardado = _tagsTelActivo;
       cerrarTagsModal();
       await actualizarLeads();
+      // Si el lead está abierto en el Live Chat, refrescar el header para mostrar los nuevos tags
+      if (contactoActivo && contactoActivo === telGuardado) {
+        const conv = conversaciones.find(c => c.telefono === contactoActivo);
+        if (conv) renderChatHeader(contactoActivo, conv.modo_humano || false);
+      }
     } else {
       btn.textContent = 'Error — reintentar'; btn.disabled = false;
     }
@@ -3989,6 +3995,16 @@ function renderChatHeader(telefono, modoHumano) {
       : 'Mensaje manual (bot sigue activo)...';
   }
   if (btn) { btn.disabled = false; btn.classList.toggle('modo-humano', modoHumano); }
+  const tags    = conv ? (conv.tags || []) : [];
+  const tagsChips = tags.length
+    ? tags.map(t => {
+        const c = _tagColorModal(t);
+        return `<span style="background:${c}22;color:${c};border:1px solid ${c}44;border-radius:10px;padding:.1rem .45rem;font-size:.6rem;font-weight:600;white-space:nowrap">${esc(t)}</span>`;
+      }).join('')
+    : '';
+  const tagsSub = tagsChips
+    ? `<div style="display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.25rem">${tagsChips}</div>`
+    : '';
   const actions = modoHumano
     ? `<button class="btn-toggle-lead activo" onclick="liberarLeadChat('${safeTel}')">
          <span class="btn-toggle-icon">&#9646;&#9646;</span> Liberar IA
@@ -3996,14 +4012,16 @@ function renderChatHeader(telefono, modoHumano) {
     : `<button class="btn-toggle-lead" onclick="tomarLeadChat('${safeTel}',this)">
          <span class="btn-toggle-icon">&#128100;</span> Tomar Lead
        </button>`;
+  const btnTags = `<button class="btn-tags${tags.length?' activo':''}" title="Editar tags" onclick="abrirTagsModal('${safeTel}','${nombre.replace(/['"<>&]/g,'')}')">&#127991;</button>`;
   el.innerHTML = `
     <button id="btn-wa-back" onclick="history.back()" title="Volver">&#8592;</button>
     <div class="wa-chat-hdr-avatar" style="background:${color}22;color:${color};border:1.5px solid ${color}55">${inicial}</div>
     <div class="wa-chat-hdr-info">
       <div class="wa-chat-hdr-name">${esc(nombre)}</div>
       <div class="wa-chat-hdr-sub">${prioridad} ${estado} &middot; <span style="color:${scoreColor};font-weight:700">${score} pts</span> &middot; +${safeTel}</div>
+      ${tagsSub}
     </div>
-    <div class="wa-chat-hdr-actions">${actions}</div>`;
+    <div class="wa-chat-hdr-actions">${btnTags}${actions}</div>`;
 }
 
 // Acciones rápidas desde el sidebar (sin abrir el chat)

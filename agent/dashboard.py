@@ -2221,7 +2221,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
   /* Chat header */
   .wa-chat-hdr {
-    flex-shrink: 0; display: flex; align-items: center; gap: .85rem;
+    flex-shrink: 0; display: flex; align-items: flex-start; gap: .85rem;
     padding: .7rem 1.25rem; border-bottom: 1px solid var(--border);
     background: rgba(0,0,0,.2); min-height: 62px;
   }
@@ -2230,10 +2230,48 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     display: flex; align-items: center; justify-content: center;
     font-size: .88rem; font-weight: 700; font-family: 'Space Grotesk', sans-serif;
   }
-  .wa-chat-hdr-info { flex: 1; min-width: 0; }
+  .wa-chat-hdr-info { flex: 1; min-width: 0; padding-top: .1rem; }
   .wa-chat-hdr-name { font-size: .92rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wa-chat-hdr-sub  { font-size: .65rem; color: var(--txt2); margin-top: 2px; font-family: monospace; }
-  .wa-chat-hdr-actions { display: flex; gap: .45rem; align-items: center; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+  .wa-chat-hdr-actions { display: flex; gap: .45rem; align-items: center; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; padding-top: .1rem; }
+
+  /* Tags inline en el chat */
+  .wa-tags-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .28rem; margin-top: .4rem; }
+  .wa-tag-chip {
+    display: inline-flex; align-items: center; gap: .22rem;
+    border-radius: 10px; padding: .15rem .5rem;
+    font-size: .62rem; font-weight: 600; cursor: default;
+    transition: opacity .15s;
+  }
+  .wa-tag-chip .wa-tag-x {
+    cursor: pointer; opacity: .6; font-size: .65rem; line-height: 1;
+    padding: 0 .05rem; transition: opacity .15s;
+  }
+  .wa-tag-chip .wa-tag-x:hover { opacity: 1; }
+  .wa-tag-add-btn {
+    display: inline-flex; align-items: center; gap: .2rem;
+    background: rgba(255,255,255,.05); border: 1px dashed rgba(255,255,255,.18);
+    border-radius: 10px; padding: .15rem .5rem; font-size: .62rem;
+    color: var(--txt3); cursor: pointer; transition: all .15s; white-space: nowrap;
+  }
+  .wa-tag-add-btn:hover { border-color: var(--neon); color: var(--neon); background: rgba(0,212,255,.07); }
+  /* Popover de predefinidos */
+  .wa-tags-popover {
+    position: absolute; z-index: 200;
+    background: #111; border: 1px solid var(--border);
+    border-radius: 10px; padding: .65rem .75rem;
+    box-shadow: 0 8px 32px rgba(0,0,0,.6);
+    display: flex; flex-wrap: wrap; gap: .35rem;
+    max-width: 260px; top: 100%; left: 0; margin-top: .3rem;
+  }
+  .wa-tag-pre {
+    border-radius: 10px; padding: .18rem .55rem;
+    font-size: .63rem; font-weight: 600; cursor: pointer;
+    transition: all .15s; white-space: nowrap;
+  }
+  .wa-tag-pre.on  { opacity: 1; transform: scale(1.04); }
+  .wa-tag-pre.off { opacity: .5; }
+  .wa-tag-pre:hover { opacity: 1; }
 
   /* Messages */
   .wa-messages {
@@ -3971,6 +4009,119 @@ function volverSidebar() {
   contactoActivo = null;
 }
 
+// ── Tags inline en el chat ────────────────────────────────────────────────────
+
+function renderChatTagChips(tags, safeTel) {
+  return tags.map(t => {
+    const c = _tagColorModal(t);
+    const tEsc = esc(t).replace(/'/g,'&#39;');
+    return `<span class="wa-tag-chip" style="background:${c}22;color:${c};border:1px solid ${c}44">
+      ${esc(t)}<span class="wa-tag-x" onclick="chatQuitarTag('${safeTel}','${tEsc}')">&#10005;</span>
+    </span>`;
+  }).join('');
+}
+
+let _tagsPopoverAbierto = false;
+
+function toggleTagsPopover(safeTel) {
+  const existing = document.getElementById('wa-tags-popover');
+  if (existing) { existing.remove(); _tagsPopoverAbierto = false; return; }
+
+  const bar  = document.getElementById('wa-tags-bar');
+  if (!bar) return;
+  const conv = conversaciones.find(c => c.telefono === safeTel);
+  const activos = conv ? (conv.tags || []) : [];
+
+  const pop = document.createElement('div');
+  pop.className = 'wa-tags-popover';
+  pop.id = 'wa-tags-popover';
+  pop.innerHTML = TAGS_PREDEFINIDOS.map(t => {
+    const c   = _tagColorModal(t);
+    const on  = activos.includes(t);
+    return `<button class="wa-tag-pre ${on?'on':'off'}"
+      style="background:${c}${on?'33':'11'};color:${c};border:1px solid ${c}${on?'66':'33'}"
+      onclick="chatToggleTag('${safeTel}','${esc(t).replace(/'/g,'&#39;')}',this)">${esc(t)}</button>`;
+  }).join('');
+
+  bar.appendChild(pop);
+  _tagsPopoverAbierto = true;
+
+  // Cerrar al hacer click fuera
+  setTimeout(() => {
+    document.addEventListener('click', function _close(e) {
+      if (!pop.contains(e.target) && e.target.id !== 'wa-tag-add-btn') {
+        pop.remove(); _tagsPopoverAbierto = false;
+        document.removeEventListener('click', _close);
+      }
+    });
+  }, 50);
+}
+
+async function chatToggleTag(telefono, tag, btn) {
+  const conv = conversaciones.find(c => c.telefono === telefono);
+  if (!conv) return;
+  let tags = [...(conv.tags || [])];
+  if (tags.includes(tag)) {
+    tags = tags.filter(t => t !== tag);
+    btn && btn.classList.replace('on','off');
+  } else {
+    if (tags.length >= 20) return;
+    tags.push(tag);
+    btn && btn.classList.replace('off','on');
+  }
+  if (btn) {
+    const c = _tagColorModal(tag);
+    btn.style.background = tags.includes(tag) ? `${c}33` : `${c}11`;
+    btn.style.borderColor = tags.includes(tag) ? `${c}66` : `${c}33`;
+  }
+  await _chatGuardarTags(telefono, tags);
+}
+
+async function chatQuitarTag(telefono, tag) {
+  const conv = conversaciones.find(c => c.telefono === telefono);
+  if (!conv) return;
+  const tags = (conv.tags || []).filter(t => t !== tag);
+  await _chatGuardarTags(telefono, tags);
+}
+
+async function _chatGuardarTags(telefono, tags) {
+  try {
+    const r = await fetch('/api/leads/' + encodeURIComponent(telefono) + '/tags', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags }),
+    });
+    if (!r.ok) return;
+    // Actualizar en memoria
+    const conv = conversaciones.find(c => c.telefono === telefono);
+    if (conv) conv.tags = tags;
+    const lead = _leadsData.find(l => l.telefono === telefono);
+    if (lead) lead.tags = tags;
+    // Re-render chips (sin re-render completo del header)
+    const bar = document.getElementById('wa-tags-bar');
+    if (bar) {
+      const safeTel = telefono.replace(/['"<>&]/g,'');
+      // Reemplazar chips (todo excepto el popover y el botón +)
+      [...bar.childNodes].forEach(n => {
+        if (n.id !== 'wa-tags-popover' && n.id !== 'wa-tag-add-btn') n.remove();
+      });
+      bar.insertAdjacentHTML('afterbegin', renderChatTagChips(tags, safeTel));
+      // Actualizar popover si está abierto
+      const pop = document.getElementById('wa-tags-popover');
+      if (pop) {
+        pop.querySelectorAll('.wa-tag-pre').forEach(btn => {
+          const t = btn.textContent.trim();
+          const on = tags.includes(t);
+          const c  = _tagColorModal(t);
+          btn.className = `wa-tag-pre ${on?'on':'off'}`;
+          btn.style.background  = on ? `${c}33` : `${c}11`;
+          btn.style.borderColor = on ? `${c}66` : `${c}33`;
+        });
+      }
+    }
+  } catch(e) { console.warn('chatGuardarTags error:', e); }
+}
+
 function renderChatHeader(telefono, modoHumano) {
   const el = document.getElementById('wa-chat-hdr');
   if (!el) return;
@@ -3995,16 +4146,7 @@ function renderChatHeader(telefono, modoHumano) {
       : 'Mensaje manual (bot sigue activo)...';
   }
   if (btn) { btn.disabled = false; btn.classList.toggle('modo-humano', modoHumano); }
-  const tags    = conv ? (conv.tags || []) : [];
-  const tagsChips = tags.length
-    ? tags.map(t => {
-        const c = _tagColorModal(t);
-        return `<span style="background:${c}22;color:${c};border:1px solid ${c}44;border-radius:10px;padding:.1rem .45rem;font-size:.6rem;font-weight:600;white-space:nowrap">${esc(t)}</span>`;
-      }).join('')
-    : '';
-  const tagsSub = tagsChips
-    ? `<div style="display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.25rem">${tagsChips}</div>`
-    : '';
+  const tags   = conv ? (conv.tags || []) : [];
   const actions = modoHumano
     ? `<button class="btn-toggle-lead activo" onclick="liberarLeadChat('${safeTel}')">
          <span class="btn-toggle-icon">&#9646;&#9646;</span> Liberar IA
@@ -4012,16 +4154,18 @@ function renderChatHeader(telefono, modoHumano) {
     : `<button class="btn-toggle-lead" onclick="tomarLeadChat('${safeTel}',this)">
          <span class="btn-toggle-icon">&#128100;</span> Tomar Lead
        </button>`;
-  const btnTags = `<button class="btn-tags${tags.length?' activo':''}" title="Editar tags" onclick="abrirTagsModal('${safeTel}','${nombre.replace(/['"<>&]/g,'')}')">&#127991;</button>`;
   el.innerHTML = `
     <button id="btn-wa-back" onclick="history.back()" title="Volver">&#8592;</button>
     <div class="wa-chat-hdr-avatar" style="background:${color}22;color:${color};border:1.5px solid ${color}55">${inicial}</div>
     <div class="wa-chat-hdr-info">
       <div class="wa-chat-hdr-name">${esc(nombre)}</div>
       <div class="wa-chat-hdr-sub">${prioridad} ${estado} &middot; <span style="color:${scoreColor};font-weight:700">${score} pts</span> &middot; +${safeTel}</div>
-      ${tagsSub}
+      <div class="wa-tags-bar" id="wa-tags-bar" style="position:relative">
+        ${renderChatTagChips(tags, safeTel)}
+        <button class="wa-tag-add-btn" id="wa-tag-add-btn" onclick="toggleTagsPopover('${safeTel}')">&#43; tag</button>
+      </div>
     </div>
-    <div class="wa-chat-hdr-actions">${btnTags}${actions}</div>`;
+    <div class="wa-chat-hdr-actions">${actions}</div>`;
 }
 
 // Acciones rápidas desde el sidebar (sin abrir el chat)

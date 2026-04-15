@@ -516,59 +516,124 @@ async def api_comunas_stats():
 # ── API: exportar leads a CSV ──────────────────────────────────────────────────
 
 @router.get("/api/leads/export-csv")
-async def export_leads_csv():
-    """Descarga todos los leads como archivo CSV avanzado (compatible con Excel)."""
+async def export_leads_csv(
+    request: Request,
+    estado: str = "",
+    tag: str = "",
+    prioridad: str = "",
+    fecha_desde: str = "",
+    fecha_hasta: str = "",
+):
+    """
+    Descarga leads como CSV con filtros opcionales.
+    Parámetros: estado, tag, prioridad (alta/media/baja), fecha_desde, fecha_hasta (YYYY-MM-DD).
+    """
+    conditions = []
+    params: list = []
+    idx = 1
+
+    if estado:
+        conditions.append(f"l.estado = ${idx}")
+        params.append(estado); idx += 1
+
+    if fecha_desde:
+        conditions.append(f"l.created_at >= ${idx}::date")
+        params.append(fecha_desde); idx += 1
+
+    if fecha_hasta:
+        conditions.append(f"l.created_at < (${idx}::date + interval '1 day')")
+        params.append(fecha_hasta); idx += 1
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT l.nombre, l.telefono, l.estado, l.score, l.subproducto,
-                   l.tags, l.notas, l.lead_resumen, l.direccion, l.comuna,
+        rows = await conn.fetch(f"""
+            SELECT l.nombre, l.telefono, l.estado, l.score,
+                   l.subproducto, l.tags, l.notas, l.lead_resumen,
+                   l.direccion, l.comuna, l.origen,
                    l.created_at, l.ultima_interaccion,
+                   l.mensajes_en_estado,
+                   (SELECT mensaje FROM historial_mensajes hh
+                    WHERE SPLIT_PART(REPLACE(hh.telefono,' ',''),'@',1)
+                        = SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1)
+                    ORDER BY hh.timestamp DESC LIMIT 1) AS ultimo_mensaje,
                    COUNT(h.id) AS total_mensajes
             FROM leads l
             LEFT JOIN historial_mensajes h
                    ON SPLIT_PART(REPLACE(h.telefono,' ',''),'@',1)
                     = SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1)
+            {where}
             GROUP BY l.id, l.nombre, l.telefono, l.estado, l.score,
                      l.subproducto, l.tags, l.notas, l.lead_resumen,
-                     l.direccion, l.comuna, l.created_at, l.ultima_interaccion
+                     l.direccion, l.comuna, l.origen,
+                     l.created_at, l.ultima_interaccion, l.mensajes_en_estado
             ORDER BY l.ultima_interaccion DESC NULLS LAST
-        """)
+        """, *params)
+
+    def _prioridad(estado: str, score: int) -> str:
+        if estado in ("caliente", "listo_para_cierre", "cerrado"):
+            return "🔴 Alta"
+        if score >= 60 or estado in ("interesado", "seguimiento"):
+            return "🟡 Media"
+        return "⚪ Baja"
+
+    def _prioridad_clave(estado: str, score: int) -> str:
+        p = _prioridad(estado, score)
+        if p.startswith("🔴"): return "alta"
+        if p.startswith("🟡"): return "media"
+        return "baja"
+
+    # Filtros post-query (tag y prioridad no son fáciles de filtrar en SQL con el esquema actual)
+    resultado = []
+    for r in rows:
+        try:
+            tags_list = json.loads(r["tags"] or "[]")
+        except Exception:
+            tags_list = []
+        score_val = r["score"] if r["score"] is not None else 0
+        estado_val = r["estado"] or ""
+        if tag and tag not in tags_list:
+            continue
+        if prioridad and _prioridad_clave(estado_val, score_val) != prioridad.lower():
+            continue
+        resultado.append((r, tags_list, score_val, estado_val))
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        "Nombre", "Teléfono", "Estado", "Score", "Producto",
-        "Tags", "Notas", "Resumen IA",
-        "Dirección", "Comuna",
-        "Primer contacto", "Última interacción",
-        "Total mensajes",
+        "Nombre", "Teléfono", "Estado", "Score", "Prioridad",
+        "Tags", "Producto", "Resumen IA",
+        "Último mensaje", "Total mensajes",
+        "Dirección", "Comuna", "Origen",
+        "Fecha de creación", "Última interacción",
+        "Notas",
     ])
-    for r in rows:
-        try:
-            tags_list = json.loads(r["tags"] or "[]")
-            tags_str  = ", ".join(tags_list)
-        except Exception:
-            tags_str = ""
+    for r, tags_list, score_val, estado_val in resultado:
+        tags_str = ", ".join(tags_list)
+        created  = r["created_at"].strftime("%Y-%m-%d %H:%M") if r["created_at"] else ""
+        ultima   = r["ultima_interaccion"].strftime("%Y-%m-%d %H:%M") if r["ultima_interaccion"] else ""
         writer.writerow([
             r["nombre"] or "",
             r["telefono"] or "",
-            r["estado"] or "",
-            r["score"] if r["score"] is not None else 0,
-            r["subproducto"] or "",
+            estado_val,
+            score_val,
+            _prioridad(estado_val, score_val),
             tags_str,
-            r["notas"] or "",
+            r["subproducto"] or "",
             r["lead_resumen"] or "",
+            r["ultimo_mensaje"] or "",
+            r["total_mensajes"] or 0,
             r["direccion"] or "",
             r["comuna"] or "",
-            str(r["created_at"]) if r["created_at"] else "",
-            str(r["ultima_interaccion"]) if r["ultima_interaccion"] else "",
-            r["total_mensajes"] or 0,
+            r["origen"] or "",
+            created,
+            ultima,
+            r["notas"] or "",
         ])
 
-    # utf-8-sig incluye BOM para que Excel lo abra sin problemas de tildes
     csv_bytes = output.getvalue().encode("utf-8-sig")
-    filename = f"leads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"leads_exportados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     return Response(
         content=csv_bytes,
         media_type="text/csv; charset=utf-8-sig",
@@ -2622,7 +2687,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <div class="card" style="overflow:visible">
       <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem">
         <span>Leads <span id="leads-count-badge" style="font-size:.6rem;color:var(--txt3);font-weight:400;margin-left:.3rem"></span></span>
-        <button onclick="exportarCSV()" id="btn-export-csv" style="background:rgba(0,212,255,.07);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.62rem;font-weight:700;letter-spacing:.06em;padding:.3rem .7rem;border-radius:8px;cursor:pointer;transition:background .15s;white-space:nowrap" onmouseover="this.style.background='rgba(0,212,255,.18)'" onmouseout="this.style.background='rgba(0,212,255,.07)'">&#8659; CSV</button>
+        <button onclick="abrirExportModal()" id="btn-export-csv" style="background:rgba(0,212,255,.07);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.62rem;font-weight:700;letter-spacing:.06em;padding:.3rem .7rem;border-radius:8px;cursor:pointer;transition:background .15s;white-space:nowrap" onmouseover="this.style.background='rgba(0,212,255,.18)'" onmouseout="this.style.background='rgba(0,212,255,.07)'">&#8659; Exportar CSV</button>
       </div>
       <!-- Filtros + búsqueda -->
       <div class="filter-bar">
@@ -3023,6 +3088,85 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── Modal exportar CSV ─────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-export-csv" onclick="if(event.target===this)cerrarExportModal()">
+  <div class="modal-box" style="max-width:460px">
+    <div class="modal-header">
+      <div>
+        <div style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">EXPORTAR LEADS</div>
+        <div style="font-size:.65rem;color:var(--txt3);margin-top:.25rem">Aplica filtros opcionales antes de descargar</div>
+      </div>
+      <button class="modal-close" onclick="cerrarExportModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div style="padding:1.4rem 1.75rem;display:flex;flex-direction:column;gap:1rem">
+
+      <!-- Estado -->
+      <div>
+        <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Estado</label>
+        <select id="exp-estado" class="filter-select" style="width:100%">
+          <option value="">Todos los estados</option>
+          <option value="nuevo">Nuevo</option>
+          <option value="contactado">Contactado</option>
+          <option value="interesado">Interesado</option>
+          <option value="seguimiento">Seguimiento</option>
+          <option value="caliente">Caliente</option>
+          <option value="listo_para_cierre">Listo para cierre</option>
+          <option value="cerrado">Cerrado</option>
+          <option value="perdido">Perdido</option>
+          <option value="sin_cobertura">Sin cobertura</option>
+        </select>
+      </div>
+
+      <!-- Tag -->
+      <div>
+        <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Tag</label>
+        <select id="exp-tag" class="filter-select" style="width:100%">
+          <option value="">Todos los tags</option>
+          <option value="Interesado">Interesado</option>
+          <option value="Sin cobertura">Sin cobertura</option>
+          <option value="Tiene contrato">Tiene contrato</option>
+          <option value="Precio alto">Precio alto</option>
+          <option value="Llamar después">Llamar después</option>
+          <option value="No contesta">No contesta</option>
+          <option value="Cerrado">Cerrado</option>
+        </select>
+      </div>
+
+      <!-- Prioridad -->
+      <div>
+        <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Prioridad visual</label>
+        <select id="exp-prioridad" class="filter-select" style="width:100%">
+          <option value="">Todas las prioridades</option>
+          <option value="alta">&#128308; Alta</option>
+          <option value="media">&#128993; Media</option>
+          <option value="baja">&#9898; Baja</option>
+        </select>
+      </div>
+
+      <!-- Rango de fechas -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+        <div>
+          <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Desde</label>
+          <input id="exp-desde" type="date" class="filter-select" style="width:100%;color-scheme:dark">
+        </div>
+        <div>
+          <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Hasta</label>
+          <input id="exp-hasta" type="date" class="filter-select" style="width:100%;color-scheme:dark">
+        </div>
+      </div>
+
+      <!-- Info de leads a exportar -->
+      <div id="exp-preview" style="background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.2);border-radius:8px;padding:.65rem .9rem;font-size:.72rem;color:var(--txt2);min-height:2.2rem"></div>
+
+      <!-- Botones -->
+      <div style="display:flex;gap:.75rem;justify-content:flex-end;margin-top:.25rem">
+        <button onclick="cerrarExportModal()" style="background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.75rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer">Cancelar</button>
+        <button id="exp-download-btn" onclick="ejecutarExportCSV()" style="background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.4);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.75rem;font-weight:700;padding:.5rem 1.4rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.25)'" onmouseout="this.style.background='rgba(0,212,255,.12)'">&#8659; Descargar CSV</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 // =========================================================================
 // CHART
@@ -3402,16 +3546,84 @@ async function guardarTags() {
     }
   } catch(_) { btn.textContent = 'Error — reintentar'; btn.disabled = false; }
 }
-function exportarCSV() {
-  const btn = document.getElementById('btn-export-csv');
-  if (btn) { btn.textContent = '⏳ Descargando...'; btn.disabled = true; }
+let _expListenersOk = false;
+function abrirExportModal() {
+  document.getElementById('modal-export-csv').style.display = 'flex';
+  // Registrar listeners de preview solo la primera vez
+  if (!_expListenersOk) {
+    ['exp-estado','exp-tag','exp-prioridad','exp-desde','exp-hasta'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('change', actualizarExportPreview);
+    });
+    _expListenersOk = true;
+  }
+  actualizarExportPreview();
+}
+
+function cerrarExportModal() {
+  document.getElementById('modal-export-csv').style.display = 'none';
+}
+
+function actualizarExportPreview() {
+  const estado    = (document.getElementById('exp-estado')?.value    || '').toLowerCase();
+  const tag       = (document.getElementById('exp-tag')?.value       || '');
+  const prioridad = (document.getElementById('exp-prioridad')?.value || '').toLowerCase();
+  const desde     = document.getElementById('exp-desde')?.value  || '';
+  const hasta     = document.getElementById('exp-hasta')?.value  || '';
+  const prev      = document.getElementById('exp-preview');
+  if (!prev) return;
+
+  function _prioridadKey(l) {
+    const e = (l.estado || '').toLowerCase();
+    const s = l.score || 0;
+    if (['caliente','listo_para_cierre','cerrado'].includes(e)) return 'alta';
+    if (s >= 60 || ['interesado','seguimiento'].includes(e))   return 'media';
+    return 'baja';
+  }
+
+  let count = _leadsData.length;
+  let filtrado = _leadsData.filter(l => {
+    if (estado    && l.estado !== estado)                     return false;
+    if (tag       && !(l.tags||[]).includes(tag))             return false;
+    if (prioridad && _prioridadKey(l) !== prioridad)          return false;
+    if (desde     && l.created_at && l.created_at < desde)   return false;
+    if (hasta     && l.created_at && l.created_at > hasta+'T23:59:59') return false;
+    return true;
+  });
+
+  const filtros = [estado, tag, prioridad, desde, hasta].filter(Boolean).length;
+  if (filtros === 0) {
+    prev.textContent = `Se exportarán ${count} leads (todos)`;
+  } else {
+    prev.textContent = `Se exportarán ≈${filtrado.length} leads con los filtros aplicados`;
+  }
+}
+
+function ejecutarExportCSV() {
+  const btn    = document.getElementById('exp-download-btn');
+  const estado = document.getElementById('exp-estado')?.value    || '';
+  const tag    = document.getElementById('exp-tag')?.value       || '';
+  const prio   = document.getElementById('exp-prioridad')?.value || '';
+  const desde  = document.getElementById('exp-desde')?.value     || '';
+  const hasta  = document.getElementById('exp-hasta')?.value     || '';
+
+  const params = new URLSearchParams();
+  if (estado) params.set('estado',      estado);
+  if (tag)    params.set('tag',         tag);
+  if (prio)   params.set('prioridad',   prio);
+  if (desde)  params.set('fecha_desde', desde);
+  if (hasta)  params.set('fecha_hasta', hasta);
+
+  const url = '/api/leads/export-csv' + (params.toString() ? '?' + params.toString() : '');
+
+  if (btn) { btn.textContent = '⏳ Generando...'; btn.disabled = true; }
   const a = document.createElement('a');
-  a.href = '/api/leads/export-csv';
-  a.download = '';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => { if (btn) { btn.textContent = '↙ Exportar CSV'; btn.disabled = false; } }, 1500);
+  a.href = url; a.download = '';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => {
+    if (btn) { btn.textContent = '↙ Descargar CSV'; btn.disabled = false; }
+    cerrarExportModal();
+  }, 1800);
 }
 let _notasTelActivo = '';
 function abrirNotasModal(telefono, nombre, notas) {

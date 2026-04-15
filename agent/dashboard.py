@@ -921,6 +921,17 @@ async def api_conversations():
             logger.info(f"[api/conversations] leads CRM={len(crm_rows)}")
             info_lead = {r["telefono"]: dict(r) for r in crm_rows}
 
+            # Timestamp del último mensaje del lead (rol='user') por teléfono
+            ultimo_user_rows = await conn.fetch("""
+                SELECT SPLIT_PART(REPLACE(telefono,' ',''),'@',1) AS telefono,
+                       MAX(timestamp) AS ultimo_user_ts
+                FROM historial_mensajes
+                WHERE rol = 'user'
+                  AND SPLIT_PART(REPLACE(telefono,' ',''),'@',1) = ANY($1)
+                GROUP BY SPLIT_PART(REPLACE(telefono,' ',''),'@',1)
+            """, telefonos)
+            ultimo_user_ts = {r["telefono"]: r["ultimo_user_ts"] for r in ultimo_user_rows}
+
         conversaciones = []
         for f in filas_mem:
             tel    = f["telefono"]
@@ -933,6 +944,7 @@ async def api_conversations():
                 tags = json.loads(lead.get("tags") or "[]")
             except Exception:
                 tags = []
+            uts = ultimo_user_ts.get(tel)
             conversaciones.append({
                 "telefono":         tel,
                 "nombre":           nombre,
@@ -942,6 +954,7 @@ async def api_conversations():
                 "ultima_actividad": str(f["ultima_actividad"]),
                 "ultimo_mensaje":   str(f["ultimo_mensaje"] or ""),
                 "ultimo_rol":       str(f["ultimo_rol"] or "user"),
+                "ultimo_user_ts":   str(uts) if uts else "",
                 "total_mensajes":   int(f["total_mensajes"]),
                 "modo_humano":      estado == "modo_humano",
                 "color":            COLOR_ESTADO.get(estado, "#888"),
@@ -2307,6 +2320,15 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   }
   .wa-tag-filter-select:focus { border-color: rgba(0,212,255,.35); color: var(--txt); }
   .wa-tag-filter-select option { background: #111; color: var(--txt); }
+  /* Indicador tiempo sin respuesta */
+  .wa-sin-resp {
+    display: inline-flex; align-items: center; gap: .18rem;
+    font-size: .58rem; font-weight: 700; border-radius: 8px;
+    padding: .08rem .35rem; white-space: nowrap; flex-shrink: 0;
+  }
+  .wa-sin-resp.verde  { background: rgba(34,197,94,.15);  color: #4ade80; }
+  .wa-sin-resp.amarillo { background: rgba(245,158,11,.15); color: #fbbf24; }
+  .wa-sin-resp.rojo   { background: rgba(239,68,68,.15);  color: #f87171; }
 
   .wa-conv-list {
     flex: 1; overflow-y: auto; min-height: 0;
@@ -3387,6 +3409,23 @@ function fmtTime(ts) {
   if (isNaN(d)) return ts.slice(10,16) || ts;
   return d.toLocaleTimeString('es-CL', { hour:'2-digit', minute:'2-digit' });
 }
+
+function fmtSinRespuesta(ts) {
+  /* Devuelve { texto, clase } según tiempo transcurrido desde el último mensaje del lead. */
+  if (!ts) return null;
+  const d = new Date(ts.replace(' ','T'));
+  if (isNaN(d)) return null;
+  const seg = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (seg < 60)   return { texto: `${seg}s`,  clase: 'verde' };
+  const min = Math.floor(seg / 60);
+  if (min < 60)   return { texto: `${min}min`, clase: 'verde' };
+  const hrs = Math.floor(min / 60);
+  if (hrs < 24)   return { texto: `${hrs}h`,  clase: hrs < 1 ? 'verde' : 'amarillo' };
+  const dias = Math.floor(hrs / 24);
+  const hRest = hrs % 24;
+  const texto = hRest > 0 ? `${dias}d ${hRest}h` : `${dias}d`;
+  return { texto, clase: 'rojo' };
+}
 function fmtDateLabel(ts) {
   if (!ts) return '';
   const d = new Date(ts.replace(' ','T'));
@@ -4335,6 +4374,10 @@ function renderConvList() {
     const tagsHtml = c.tags && c.tags.length
       ? `<div class="lead-tags" style="margin-top:.2rem">${c.tags.slice(0,3).map(t=>`<span class="tag-chip-sm" style="background:${tc(t)}22;color:${tc(t)};border:1px solid ${tc(t)}55">${esc(t)}</span>`).join('')}${c.tags.length>3?`<span class="tag-chip-sm" style="background:rgba(255,255,255,.05);color:var(--txt3)">+${c.tags.length-3}</span>`:''}</div>`
       : '';
+    const sinResp = fmtSinRespuesta(c.ultimo_user_ts);
+    const sinRespHtml = sinResp
+      ? `<span class="wa-sin-resp ${sinResp.clase}" title="Sin respuesta del lead">${sinResp.texto}</span>`
+      : '';
     return `
     <div class="wa-conv-item${activo}" id="wconv-${safeTel}" onclick="seleccionarContacto('${safeTel}')">
       <div class="wa-conv-avatar" style="background:${color}22;color:${color};border:1.5px solid ${color}44">${inicial}</div>
@@ -4346,7 +4389,7 @@ function renderConvList() {
         </div>
         <div class="wa-conv-preview-row">
           <span class="wa-conv-preview">${preview}</span>
-          <span class="wa-conv-badges"><span class="wa-conv-score" style="color:${scoreColor}">${score}</span>${badge}${toggleBtn}</span>
+          <span class="wa-conv-badges">${sinRespHtml}<span class="wa-conv-score" style="color:${scoreColor}">${score}</span>${badge}${toggleBtn}</span>
         </div>
         ${tagsHtml}
       </div>
@@ -4977,6 +5020,8 @@ window.addEventListener('popstate', function(e) {
   conectarSSE();
   actualizarConversaciones();
   setInterval(actualizarConversaciones, 30_000);
+  // Re-renderizar la lista cada 60s para actualizar los indicadores de tiempo sin respuesta
+  setInterval(renderConvList, 60_000);
 })();
 
 // =========================================================================

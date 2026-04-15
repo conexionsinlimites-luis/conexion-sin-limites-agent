@@ -17,6 +17,9 @@ knowledge/*
 !knowledge/.gitkeep
 !knowledge/*.yaml
 
+# Logs de envío masivo
+envio_log_*.xlsx
+
 # Session state
 config/session.yaml
 

@@ -2237,7 +2237,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     font-size: .6rem; font-weight: 700; letter-spacing: .18em;
     color: var(--neon); text-transform: uppercase;
   }
-  .wa-search-wrap { padding: .6rem .9rem; border-bottom: 1px solid rgba(255,255,255,.05); flex-shrink: 0; }
+  .wa-search-wrap { padding: .6rem .9rem .5rem; border-bottom: 1px solid rgba(255,255,255,.05); flex-shrink: 0; }
   .wa-search-input {
     width: 100%; background: rgba(255,255,255,.06);
     border: 1px solid rgba(255,255,255,.1); border-radius: 20px;
@@ -2247,6 +2247,23 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   }
   .wa-search-input:focus { border-color: rgba(0,212,255,.4); }
   .wa-search-input::placeholder { color: var(--txt3); }
+  .wa-tag-filter-wrap {
+    padding: .45rem .9rem .55rem; border-bottom: 1px solid rgba(255,255,255,.05);
+    flex-shrink: 0;
+  }
+  .wa-tag-filter-select {
+    width: 100%; background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.08); border-radius: 8px;
+    padding: .38rem .75rem; color: var(--txt2);
+    font-size: .72rem; outline: none; cursor: pointer;
+    font-family: 'Space Grotesk', sans-serif; transition: border-color .2s;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right .65rem center;
+    padding-right: 1.8rem;
+  }
+  .wa-tag-filter-select:focus { border-color: rgba(0,212,255,.35); color: var(--txt); }
+  .wa-tag-filter-select option { background: #111; color: var(--txt); }
 
   .wa-conv-list {
     flex: 1; overflow-y: auto; min-height: 0;
@@ -2817,6 +2834,18 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       </div>
       <div class="wa-search-wrap">
         <input type="text" id="wa-search" class="wa-search-input" placeholder="&#128269; Buscar contacto..." oninput="filtrarContactos(this.value)">
+      </div>
+      <div class="wa-tag-filter-wrap">
+        <select id="wa-tag-filter" class="wa-tag-filter-select" onchange="filtrarPorTag(this.value)">
+          <option value="">&#127991; Todos los tags</option>
+          <option value="Interesado">Interesado</option>
+          <option value="Sin cobertura">Sin cobertura</option>
+          <option value="Tiene contrato">Tiene contrato</option>
+          <option value="Precio alto">Precio alto</option>
+          <option value="Llamar despu&#233;s">Llamar despu&#233;s</option>
+          <option value="No contesta">No contesta</option>
+          <option value="Cerrado">Cerrado</option>
+        </select>
       </div>
       <div class="wa-conv-list" id="wa-conv-list">
         <div class="empty" style="padding:2.5rem 1rem;text-align:center">Cargando...</div>
@@ -4124,20 +4153,34 @@ async function actualizarConversaciones() {
     const d = await r.json();
     conversaciones = d.conversaciones || [];
     console.log('[LiveChat] conversaciones cargadas:', conversaciones.length);
-    const cnt = document.getElementById('wa-conv-count');
-    if (cnt) cnt.textContent = conversaciones.length;
     renderConvList();
   } catch(err) { console.error('[LiveChat] actualizarConversaciones error:', err); }
 }
 
+let _tagFilter = '';
 function filtrarContactos(q) { _searchQuery = q.toLowerCase(); renderConvList(); }
+function filtrarPorTag(tag) { _tagFilter = tag; renderConvList(); }
 
 function renderConvList() {
   const el = document.getElementById('wa-conv-list');
   if (!el) return;
-  const lista = _searchQuery
-    ? conversaciones.filter(c => { const n=(c.nombre||c.telefono).toLowerCase(); return n.includes(_searchQuery)||c.telefono.includes(_searchQuery); })
-    : conversaciones;
+
+  let lista = conversaciones;
+  if (_searchQuery) {
+    lista = lista.filter(c => {
+      const n = (c.nombre||c.telefono).toLowerCase();
+      return n.includes(_searchQuery) || c.telefono.includes(_searchQuery);
+    });
+  }
+  if (_tagFilter) {
+    lista = lista.filter(c => (c.tags||[]).includes(_tagFilter));
+  }
+
+  // Actualizar contador con el número filtrado
+  const cnt = document.getElementById('wa-conv-count');
+  if (cnt) cnt.textContent = _tagFilter || _searchQuery
+    ? `${lista.length} / ${conversaciones.length}`
+    : conversaciones.length;
   if (!lista.length) {
     el.innerHTML = `<div class="empty" style="padding:2.5rem 1rem;text-align:center">${_searchQuery?'Sin resultados':'Sin conversaciones'}</div>`;
     return;

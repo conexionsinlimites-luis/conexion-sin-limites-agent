@@ -144,6 +144,17 @@ async def init_db():
         await conn.execute(
             "ALTER TABLE leads ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''"
         )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS lead_notas (
+                id SERIAL PRIMARY KEY,
+                telefono TEXT NOT NULL,
+                contenido TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lead_notas_telefono ON lead_notas(telefono)"
+        )
     print("CRM Valentina inicializado correctamente (PostgreSQL)")
 
 

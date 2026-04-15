@@ -676,6 +676,49 @@ async def actualizar_notas_lead(telefono: str, request: Request):
     return JSONResponse({"ok": True})
 
 
+# ── API: notas internas por lead (tabla lead_notas) ───────────────────────────
+
+@router.get("/api/leads/{telefono}/notas-internas")
+async def listar_notas_internas(telefono: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, contenido, created_at FROM lead_notas "
+            "WHERE telefono=$1 ORDER BY created_at DESC",
+            telefono
+        )
+    return JSONResponse({"notas": [
+        {"id": r["id"], "contenido": r["contenido"],
+         "created_at": r["created_at"].strftime("%Y-%m-%d %H:%M")}
+        for r in rows
+    ]})
+
+
+@router.post("/api/leads/{telefono}/notas-internas")
+async def crear_nota_interna(telefono: str, request: Request):
+    body = await request.json()
+    contenido = str(body.get("contenido", "")).strip()[:1000]
+    if not contenido:
+        raise HTTPException(status_code=400, detail="Contenido vacío")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO lead_notas(telefono, contenido) VALUES($1,$2) "
+            "RETURNING id, created_at",
+            telefono, contenido
+        )
+    return JSONResponse({"ok": True, "id": row["id"],
+                         "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M")})
+
+
+@router.delete("/api/leads/notas-internas/{nota_id}")
+async def eliminar_nota_interna(nota_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM lead_notas WHERE id=$1", nota_id)
+    return JSONResponse({"ok": True})
+
+
 # ── API: detalle completo de un lead ──────────────────────────────────────────
 
 @router.get("/api/leads/{telefono}/detail")
@@ -2355,6 +2398,73 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .wa-tag-pre.off { opacity: .5; }
   .wa-tag-pre:hover { opacity: 1; }
 
+  /* Notas internas en el chat */
+  .wa-notas-panel {
+    flex-shrink: 0; border-top: 1px solid rgba(255,255,255,.06);
+    background: rgba(0,0,0,.18); display: flex; flex-direction: column;
+    max-height: 260px; transition: max-height .25s ease;
+  }
+  .wa-notas-panel.collapsed { max-height: 36px; overflow: hidden; }
+  .wa-notas-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: .45rem .9rem; cursor: pointer; flex-shrink: 0;
+    user-select: none;
+  }
+  .wa-notas-title {
+    font-size: .62rem; font-weight: 700; color: var(--txt3);
+    text-transform: uppercase; letter-spacing: .09em;
+    display: flex; align-items: center; gap: .4rem;
+  }
+  .wa-notas-count {
+    background: rgba(0,212,255,.15); color: var(--neon);
+    border-radius: 8px; padding: .05rem .35rem;
+    font-size: .58rem; font-weight: 700;
+  }
+  .wa-notas-toggle { font-size: .65rem; color: var(--txt3); transition: transform .2s; }
+  .wa-notas-panel.collapsed .wa-notas-toggle { transform: rotate(-90deg); }
+  .wa-notas-body {
+    flex: 1; overflow-y: auto; padding: 0 .9rem .5rem;
+    display: flex; flex-direction: column; gap: .45rem;
+  }
+  .wa-nota-item {
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
+    border-radius: 8px; padding: .5rem .65rem;
+    display: flex; align-items: flex-start; gap: .5rem;
+  }
+  .wa-nota-texto { flex: 1; font-size: .75rem; color: var(--txt); line-height: 1.45; word-break: break-word; }
+  .wa-nota-meta  { font-size: .58rem; color: var(--txt3); margin-top: .25rem; }
+  .wa-nota-del   {
+    flex-shrink: 0; background: none; border: none; cursor: pointer;
+    color: var(--txt3); font-size: .75rem; padding: .1rem .2rem;
+    opacity: .5; transition: opacity .15s; line-height: 1;
+  }
+  .wa-nota-del:hover { opacity: 1; color: var(--red); }
+  .wa-nota-ver-todas {
+    font-size: .65rem; color: var(--neon); cursor: pointer;
+    text-align: center; padding: .3rem; opacity: .8;
+    transition: opacity .15s;
+  }
+  .wa-nota-ver-todas:hover { opacity: 1; }
+  .wa-notas-input-row {
+    display: flex; gap: .45rem; padding: .5rem .9rem .6rem; flex-shrink: 0;
+    border-top: 1px solid rgba(255,255,255,.05);
+  }
+  .wa-nota-input {
+    flex: 1; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+    border-radius: 8px; color: var(--txt); font-family: 'Space Grotesk', sans-serif;
+    font-size: .75rem; padding: .42rem .7rem; outline: none; resize: none;
+    transition: border-color .2s; line-height: 1.4;
+  }
+  .wa-nota-input:focus { border-color: rgba(0,212,255,.4); }
+  .wa-nota-input::placeholder { color: var(--txt3); }
+  .wa-nota-send {
+    flex-shrink: 0; background: rgba(0,212,255,.12); border: 1px solid rgba(0,212,255,.3);
+    color: var(--neon); border-radius: 8px; font-size: .7rem; font-weight: 700;
+    padding: .42rem .8rem; cursor: pointer; transition: background .15s; white-space: nowrap;
+  }
+  .wa-nota-send:hover { background: rgba(0,212,255,.25); }
+  .wa-nota-send:disabled { opacity: .4; cursor: default; }
+
   /* Messages */
   .wa-messages {
     flex: 1; overflow-y: scroll; min-height: 0;
@@ -2870,6 +2980,25 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         <!-- Header -->
         <div class="wa-chat-hdr" id="wa-chat-hdr">
           <button id="btn-wa-back" onclick="history.back()" title="Volver">&#8592;</button>
+        </div>
+
+        <!-- Notas internas -->
+        <div class="wa-notas-panel collapsed" id="wa-notas-panel">
+          <div class="wa-notas-header" onclick="toggleNotasPanel()">
+            <div class="wa-notas-title">
+              &#128221; Notas internas
+              <span class="wa-notas-count" id="wa-notas-count" style="display:none">0</span>
+            </div>
+            <span class="wa-notas-toggle">&#9660;</span>
+          </div>
+          <div class="wa-notas-body" id="wa-notas-body"></div>
+          <div class="wa-notas-input-row">
+            <textarea class="wa-nota-input" id="wa-nota-input" rows="1"
+              placeholder="Escribe una nota interna..."
+              oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,80)+'px'"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();guardarNotaInterna();}"></textarea>
+            <button class="wa-nota-send" id="wa-nota-send-btn" onclick="guardarNotaInterna()">+ Nota</button>
+          </div>
         </div>
 
         <!-- Burbujas -->
@@ -4256,12 +4385,110 @@ async function seleccionarContacto(telefono) {
     if (input) input.focus();
   }
 
+  // Resetear panel de notas y cargar las del contacto
+  _notasData = []; _notasVerTodo = false;
+  renderNotasChat();
+  cargarNotasChat(telefono);
+
   await cargarMensajes(telefono);
 }
 
 function volverSidebar() {
   document.getElementById('wa-layout').classList.remove('chat-abierto');
   contactoActivo = null;
+}
+
+// ── Notas internas del lead en el chat ───────────────────────────────────────
+
+let _notasData    = [];   // cache de notas del contacto activo
+let _notasVerTodo = false;
+const _NOTAS_VISIBLE = 3;
+
+async function cargarNotasChat(telefono) {
+  if (!telefono) return;
+  try {
+    const r = await fetch('/api/leads/' + encodeURIComponent(telefono) + '/notas-internas');
+    if (!r.ok) return;
+    const d = await r.json();
+    _notasData    = d.notas || [];
+    _notasVerTodo = false;
+    renderNotasChat();
+  } catch(e) { console.warn('cargarNotasChat error:', e); }
+}
+
+function renderNotasChat() {
+  const body  = document.getElementById('wa-notas-body');
+  const cnt   = document.getElementById('wa-notas-count');
+  const panel = document.getElementById('wa-notas-panel');
+  if (!body) return;
+
+  const total = _notasData.length;
+  if (cnt) {
+    cnt.textContent = total;
+    cnt.style.display = total ? 'inline' : 'none';
+  }
+
+  if (!total) {
+    body.innerHTML = '<div style="font-size:.7rem;color:var(--txt3);padding:.4rem 0;text-align:center">Sin notas aún</div>';
+    return;
+  }
+
+  const visibles = _notasVerTodo ? _notasData : _notasData.slice(0, _NOTAS_VISIBLE);
+  body.innerHTML = visibles.map(n => `
+    <div class="wa-nota-item" id="nota-${n.id}">
+      <div style="flex:1">
+        <div class="wa-nota-texto">${esc(n.contenido)}</div>
+        <div class="wa-nota-meta">${n.created_at}</div>
+      </div>
+      <button class="wa-nota-del" title="Eliminar nota" onclick="eliminarNotaChat(${n.id})">&#10005;</button>
+    </div>
+  `).join('') + (total > _NOTAS_VISIBLE && !_notasVerTodo
+    ? `<div class="wa-nota-ver-todas" onclick="_notasVerTodo=true;renderNotasChat()">Ver todas (${total - _NOTAS_VISIBLE} más)</div>`
+    : total > _NOTAS_VISIBLE && _notasVerTodo
+    ? `<div class="wa-nota-ver-todas" onclick="_notasVerTodo=false;renderNotasChat()">Ver menos</div>`
+    : '');
+}
+
+function toggleNotasPanel() {
+  const panel = document.getElementById('wa-notas-panel');
+  if (panel) panel.classList.toggle('collapsed');
+}
+
+async function guardarNotaInterna() {
+  if (!contactoActivo) return;
+  const input = document.getElementById('wa-nota-input');
+  const btn   = document.getElementById('wa-nota-send-btn');
+  const texto = (input?.value || '').trim();
+  if (!texto) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/leads/' + encodeURIComponent(contactoActivo) + '/notas-internas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contenido: texto }),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      _notasData.unshift({ id: d.id, contenido: texto, created_at: d.created_at });
+      input.value = '';
+      input.style.height = 'auto';
+      renderNotasChat();
+      // Expandir panel si está colapsado
+      const panel = document.getElementById('wa-notas-panel');
+      if (panel?.classList.contains('collapsed')) panel.classList.remove('collapsed');
+    }
+  } catch(e) { console.warn('guardarNotaInterna error:', e); }
+  btn.disabled = false;
+}
+
+async function eliminarNotaChat(notaId) {
+  try {
+    const r = await fetch('/api/leads/notas-internas/' + notaId, { method: 'DELETE' });
+    if (r.ok) {
+      _notasData = _notasData.filter(n => n.id !== notaId);
+      renderNotasChat();
+    }
+  } catch(e) { console.warn('eliminarNotaChat error:', e); }
 }
 
 // ── Tags inline en el chat ────────────────────────────────────────────────────

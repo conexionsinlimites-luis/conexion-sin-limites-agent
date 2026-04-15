@@ -20,6 +20,9 @@ knowledge/*
 # Logs de envío masivo
 envio_log_*.xlsx
 
+# Diario interno del proyecto (datos sensibles)
+MEMORY.md
+
 # Session state
 config/session.yaml
 

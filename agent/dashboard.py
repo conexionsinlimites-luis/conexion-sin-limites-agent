@@ -1411,6 +1411,53 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .fu-tipo-cnt  { color: var(--txt2); }
   .fu-tipo-pct  { font-weight: 700; min-width: 3rem; text-align: right; }
 
+  /* ── mapa de calor por comuna ── */
+  .heatmap-table {
+    width: 100%; border-collapse: collapse; font-size: .76rem;
+  }
+  .heatmap-table th {
+    font-size: .6rem; font-weight: 700; color: var(--txt3);
+    text-transform: uppercase; letter-spacing: .07em;
+    padding: .35rem .6rem; text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  .heatmap-table th:not(:first-child) { text-align: right; }
+  .heatmap-table td {
+    padding: .42rem .6rem; border-bottom: 1px solid rgba(255,255,255,.03);
+    vertical-align: middle;
+  }
+  .heatmap-table td:not(:first-child) { text-align: right; }
+  .heatmap-table tr:last-child td { border-bottom: none; }
+  .heatmap-table tr:hover td { background: rgba(255,255,255,.03); }
+  .hm-comuna { font-weight: 600; color: var(--txt); }
+  .hm-total  { font-family: 'Orbitron', sans-serif; font-weight: 700; font-size: .72rem; }
+  .hm-hot    { color: #00D4FF; }
+  .hm-score  { color: var(--txt2); font-size: .7rem; }
+  .hm-bar-wrap { width: 90px; display: inline-block; vertical-align: middle; }
+  .hm-bar-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,.07); overflow: hidden; }
+  .hm-bar-fill  { height: 100%; border-radius: 2px; transition: width .6s cubic-bezier(.4,0,.2,1); }
+  .hm-rank-hot  { color: var(--red); }
+  .hm-rank-warm { color: #FFAA00; }
+  .hm-rank-cold { color: var(--txt3); }
+  .heatmap-search {
+    width: 100%; background: rgba(255,255,255,.04); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--txt); font-family: 'Space Grotesk', sans-serif;
+    font-size: .78rem; padding: .5rem .8rem; outline: none;
+    transition: border-color .2s; margin-bottom: 1rem;
+  }
+  .heatmap-search:focus { border-color: var(--neon); }
+  .hm-pagination {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: .9rem; font-size: .68rem; color: var(--txt3);
+  }
+  .hm-pagination button {
+    background: rgba(255,255,255,.06); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--txt2); font-size: .65rem; font-weight: 600;
+    padding: .28rem .75rem; cursor: pointer; transition: all .2s;
+  }
+  .hm-pagination button:hover:not(:disabled) { border-color: var(--neon); color: var(--neon); }
+  .hm-pagination button:disabled { opacity: .3; cursor: default; }
+
   /* ── glass cards ── */
   .card {
     background: var(--glass);
@@ -2570,6 +2617,45 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
   </div>
 
+  <!-- Mapa de calor por comuna -->
+  <div class="section-label">Mapa de calor por comuna</div>
+  <div class="card" style="margin-bottom:2rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+      <div class="card-title" style="margin-bottom:0">Leads por comuna <span id="hm-total-label" style="font-size:.65rem;font-weight:400;color:var(--txt3);margin-left:.4rem"></span></div>
+      <div style="font-size:.65rem;color:var(--txt3)">
+        <span style="color:var(--red)">&#9679;</span> Top 3 &nbsp;
+        <span style="color:#FFAA00">&#9679;</span> Alto &nbsp;
+        <span style="color:var(--txt3)">&#9679;</span> Bajo
+      </div>
+    </div>
+    <input class="heatmap-search" id="hm-search" type="text" placeholder="&#128269; Buscar comuna..." oninput="hmFiltrar()" autocomplete="off">
+    <div style="overflow-x:auto">
+      <table class="heatmap-table">
+        <thead>
+          <tr>
+            <th style="width:1.5rem">#</th>
+            <th></th>
+            <th>Comuna</th>
+            <th>Leads</th>
+            <th>Calientes</th>
+            <th>Score prom.</th>
+            <th style="min-width:100px">Distribuci&oacute;n</th>
+          </tr>
+        </thead>
+        <tbody id="hm-tbody">
+          <tr><td colspan="7" class="empty" style="padding:1.5rem;text-align:center">Cargando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hm-pagination">
+      <span id="hm-pag-info"></span>
+      <div style="display:flex;gap:.4rem">
+        <button id="hm-prev" onclick="hmPaginar(-1)" disabled>&#8592; Ant</button>
+        <button id="hm-next" onclick="hmPaginar(1)">Sig &#8594;</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Actividad reciente -->
   <div class="section-label">Actividad reciente</div>
   <div class="card" style="margin-bottom:2rem">
@@ -3625,8 +3711,106 @@ function renderChartProductos(data) {
   });
 }
 
+// ── Mapa de calor por comuna ───────────────────────────────────────────────
+let _hmData      = [];   // todos los datos originales
+let _hmFiltrado  = [];   // filtrado por búsqueda
+let _hmPage      = 0;
+const _HM_PAGE_SIZE = 15;
+
+async function actualizarHeatmap() {
+  try {
+    const r = await fetch('/api/leads/comunas/stats');
+    if (!r.ok) return;
+    const d = await r.json();
+    _hmData = d.comunas || [];
+    _hmFiltrado = [..._hmData];
+    _hmPage = 0;
+    hmRender();
+  } catch(e) { console.warn('heatmap error:', e); }
+}
+
+function hmFiltrar() {
+  const q = (document.getElementById('hm-search').value || '').toLowerCase().trim();
+  _hmFiltrado = q
+    ? _hmData.filter(c => c.comuna.toLowerCase().includes(q))
+    : [..._hmData];
+  _hmPage = 0;
+  hmRender();
+}
+
+function hmPaginar(dir) {
+  const maxPage = Math.ceil(_hmFiltrado.length / _HM_PAGE_SIZE) - 1;
+  _hmPage = Math.max(0, Math.min(_hmPage + dir, maxPage));
+  hmRender();
+}
+
+function hmRender() {
+  const tbody = document.getElementById('hm-tbody');
+  if (!tbody) return;
+
+  const total = _hmFiltrado.length;
+  const start = _hmPage * _HM_PAGE_SIZE;
+  const page  = _hmFiltrado.slice(start, start + _HM_PAGE_SIZE);
+  const maxTotal = _hmData.length > 0 ? _hmData[0].total : 1;
+
+  // Label total
+  const lbl = document.getElementById('hm-total-label');
+  if (lbl) lbl.textContent = `(${_hmData.length} comunas)`;
+
+  if (page.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty" style="padding:1.5rem;text-align:center">Sin resultados</td></tr>';
+    document.getElementById('hm-pag-info').textContent = '';
+    document.getElementById('hm-prev').disabled = true;
+    document.getElementById('hm-next').disabled = true;
+    return;
+  }
+
+  tbody.innerHTML = page.map((c, i) => {
+    const globalRank = start + i;   // posición real (0-based) en el dataset completo
+    const pct   = maxTotal > 0 ? Math.round((c.total / maxTotal) * 100) : 0;
+    const hotPct = c.total > 0 ? Math.round((c.calientes / c.total) * 100) : 0;
+
+    // Color de la barra según posición real
+    let barColor, rankIcon, rankClass;
+    if (globalRank < 3) {
+      barColor = '#FF2233'; rankIcon = '🔴'; rankClass = 'hm-rank-hot';
+    } else if (globalRank < Math.ceil(_hmData.length * 0.3)) {
+      barColor = '#FFAA00'; rankIcon = '🟡'; rankClass = 'hm-rank-warm';
+    } else {
+      barColor = 'rgba(255,255,255,.25)'; rankIcon = '⚪'; rankClass = 'hm-rank-cold';
+    }
+
+    return `<tr>
+      <td style="color:var(--txt3);font-size:.65rem">${globalRank + 1}</td>
+      <td style="font-size:1rem;line-height:1">${rankIcon}</td>
+      <td class="hm-comuna">${esc(c.comuna)}</td>
+      <td class="hm-total ${rankClass}">${c.total}</td>
+      <td style="font-size:.72rem">
+        ${c.calientes > 0
+          ? `<span class="hm-hot">${c.calientes}</span> <span style="color:var(--txt3);font-size:.62rem">(${hotPct}%)</span>`
+          : `<span style="color:var(--txt3)">—</span>`}
+      </td>
+      <td class="hm-score">${c.score_promedio > 0 ? c.score_promedio.toFixed(1) : '—'}</td>
+      <td>
+        <div class="hm-bar-wrap">
+          <div class="hm-bar-track">
+            <div class="hm-bar-fill" style="width:${pct}%;background:${barColor}"></div>
+          </div>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  // Paginación
+  const totalPages = Math.ceil(total / _HM_PAGE_SIZE);
+  document.getElementById('hm-pag-info').textContent =
+    total > _HM_PAGE_SIZE ? `Página ${_hmPage + 1} de ${totalPages} · ${total} comunas` : `${total} comunas`;
+  document.getElementById('hm-prev').disabled = (_hmPage === 0);
+  document.getElementById('hm-next').disabled = (_hmPage >= totalPages - 1);
+}
+
 async function refresh() {
-  try { await Promise.all([actualizarStats(), actualizarLeads(), actualizarMensajes(), actualizarCampanas()]); }
+  try { await Promise.all([actualizarStats(), actualizarLeads(), actualizarMensajes(), actualizarCampanas(), actualizarHeatmap()]); }
   catch(e) { document.getElementById('last-update').textContent = 'ERROR'; }
 }
 refresh();

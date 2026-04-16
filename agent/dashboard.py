@@ -1077,11 +1077,16 @@ async def api_chat_historial(telefono: str):
         pool = await get_pool()
         async with pool.acquire() as conn:
             filas = await conn.fetch(
-                "SELECT rol AS role, mensaje AS content, timestamp FROM historial_mensajes WHERE REPLACE(telefono, ' ', '') = $1 ORDER BY timestamp ASC",
+                "SELECT rol AS role, mensaje AS content, timestamp, estado_lead FROM historial_mensajes WHERE REPLACE(telefono, ' ', '') = $1 ORDER BY timestamp ASC",
                 tel
             )
         mensajes = [
-            {"role": f["role"], "content": f["content"], "timestamp": str(f["timestamp"])}
+            {
+                "role": f["role"],
+                "content": f["content"],
+                "timestamp": str(f["timestamp"]),
+                "estado_lead": f["estado_lead"] or "",
+            }
             for f in filas
         ]
         logger.info(f"[api/chat] telefono={tel} mensajes={len(mensajes)}")
@@ -2330,6 +2335,46 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .wa-sin-resp.amarillo { background: rgba(245,158,11,.15); color: #fbbf24; }
   .wa-sin-resp.rojo   { background: rgba(239,68,68,.15);  color: #f87171; }
 
+  /* Badge respondió / sin respuesta en sidebar */
+  .wa-resp-badge {
+    display: inline-flex; align-items: center; gap: .18rem;
+    font-size: .58rem; font-weight: 700; border-radius: 8px;
+    padding: .1rem .4rem; white-space: nowrap; flex-shrink: 0;
+    letter-spacing: .04em;
+  }
+  .wa-resp-badge.respondio   { background: rgba(34,197,94,.18);  color: #4ade80; border: 1px solid rgba(34,197,94,.35); }
+  .wa-resp-badge.sin-resp    { background: rgba(100,100,120,.15); color: #9ca3af; border: 1px solid rgba(100,100,120,.3); }
+
+  /* Filtros de estado (tabs) */
+  .wa-status-filter-wrap {
+    padding: .45rem .9rem .5rem; border-bottom: 1px solid rgba(255,255,255,.05);
+    flex-shrink: 0; display: flex; gap: .3rem; flex-wrap: wrap;
+  }
+  .wa-sf-btn {
+    flex: 1; min-width: 0; padding: .28rem .5rem; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,.1);
+    background: rgba(255,255,255,.04); color: var(--txt2);
+    font-family: 'Space Grotesk', sans-serif; font-size: .62rem; font-weight: 600;
+    cursor: pointer; transition: all .15s; white-space: nowrap; text-align: center;
+  }
+  .wa-sf-btn:hover { background: rgba(255,255,255,.09); color: var(--txt); }
+  .wa-sf-btn.active {
+    background: rgba(0,212,255,.15); color: var(--neon);
+    border-color: rgba(0,212,255,.45); box-shadow: 0 0 8px rgba(0,212,255,.15);
+  }
+  .wa-sf-btn.active.manual {
+    background: rgba(239,68,68,.15); color: #f87171;
+    border-color: rgba(239,68,68,.45); box-shadow: 0 0 8px rgba(239,68,68,.15);
+  }
+
+  /* Indicador "atendido por" en sidebar */
+  .wa-atendido {
+    font-size: .58rem; color: var(--txt3); white-space: nowrap; flex-shrink: 0;
+    letter-spacing: .02em;
+  }
+  .wa-atendido.valentina { color: rgba(0,212,255,.7); }
+  .wa-atendido.yo        { color: rgba(34,197,94,.8); }
+
   .wa-conv-list {
     flex: 1; overflow-y: auto; min-height: 0;
     -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
@@ -2516,9 +2561,24 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     border-bottom-right-radius: 3px; color: var(--txt);
   }
   .wa-bubble.assistant.error { opacity: .5; border-color: rgba(255,34,51,.4); background: rgba(255,34,51,.07); }
+  /* Burbujas del operador humano (Yo) — verde */
+  .wa-bubble-wrap.owner { align-self: flex-end; }
+  .wa-bubble.owner {
+    background: rgba(34,197,94,.14); border: 1px solid rgba(34,197,94,.28);
+    border-bottom-right-radius: 3px; color: var(--txt);
+  }
+  /* Etiqueta de remitente encima de la burbuja */
+  .wa-bubble-sender {
+    font-size: .58rem; font-weight: 700; letter-spacing: .04em;
+    margin-bottom: .18rem; opacity: .75;
+  }
+  .wa-bubble-wrap.user     .wa-bubble-sender { color: #9ca3af; text-align: left; }
+  .wa-bubble-wrap.assistant .wa-bubble-sender { color: rgba(0,212,255,.85); text-align: right; }
+  .wa-bubble-wrap.owner    .wa-bubble-sender { color: rgba(34,197,94,.85); text-align: right; }
   .wa-bubble-time { font-size: .58rem; color: var(--txt3); margin-top: .15rem; font-family: monospace; }
   .wa-bubble-wrap.user .wa-bubble-time      { text-align: left; }
   .wa-bubble-wrap.assistant .wa-bubble-time { text-align: right; }
+  .wa-bubble-wrap.owner .wa-bubble-time     { text-align: right; }
 
   /* Date separator */
   .wa-date-sep {
@@ -2561,31 +2621,52 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .wa-send-btn.modo-humano { background: rgba(168,85,247,.15); color: #c084fc; border-color: rgba(168,85,247,.4); }
   .wa-send-btn.modo-humano:hover:not(:disabled) { background: rgba(168,85,247,.28); box-shadow: 0 0 14px rgba(168,85,247,.3); }
 
+  /* ── Banner MODO MANUAL (rojo, visible en el chat) ── */
+  .wa-manual-banner {
+    display: none; align-items: center; justify-content: center; gap: .6rem;
+    background: rgba(239,68,68,.18); border-bottom: 2px solid rgba(239,68,68,.6);
+    padding: .55rem 1.25rem; flex-shrink: 0;
+    animation: pulseRed 2s ease-in-out infinite;
+  }
+  .wa-manual-banner.visible { display: flex; }
+  .wa-manual-banner-text {
+    font-family: 'Orbitron', sans-serif; font-size: .7rem; font-weight: 700;
+    color: #f87171; letter-spacing: .12em; text-transform: uppercase;
+  }
+  .wa-manual-banner-sub {
+    font-size: .65rem; color: rgba(248,113,113,.75); letter-spacing: .04em;
+  }
+  @keyframes pulseRed {
+    0%, 100% { background: rgba(239,68,68,.18); }
+    50%       { background: rgba(239,68,68,.28); }
+  }
+
   /* ── Botón toggle Tomar Lead / Liberar IA ── */
   .btn-toggle-lead {
-    display: flex; align-items: center; gap: .35rem;
-    padding: .38rem .9rem; border-radius: 20px; border: none; cursor: pointer;
-    font-family: 'Space Grotesk', sans-serif; font-size: .72rem; font-weight: 700;
-    letter-spacing: .04em; text-transform: uppercase; white-space: nowrap;
+    display: flex; align-items: center; gap: .4rem;
+    padding: .55rem 1.2rem; border-radius: 22px; border: none; cursor: pointer;
+    font-family: 'Space Grotesk', sans-serif; font-size: .78rem; font-weight: 700;
+    letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
     transition: background .2s, box-shadow .2s, transform .1s;
-    background: rgba(0,212,255,.12); color: var(--neon);
-    border: 1px solid rgba(0,212,255,.4);
-    box-shadow: 0 0 8px rgba(0,212,255,.15);
+    background: rgba(0,212,255,.15); color: var(--neon);
+    border: 1.5px solid rgba(0,212,255,.5);
+    box-shadow: 0 0 12px rgba(0,212,255,.2);
   }
   .btn-toggle-lead:hover:not(:disabled) {
-    background: rgba(0,212,255,.22); box-shadow: 0 0 16px rgba(0,212,255,.3);
+    background: rgba(0,212,255,.28); box-shadow: 0 0 20px rgba(0,212,255,.4);
     transform: translateY(-1px);
   }
   .btn-toggle-lead.activo {
-    background: rgba(168,85,247,.15); color: #c084fc;
-    border-color: rgba(168,85,247,.5);
-    box-shadow: 0 0 8px rgba(168,85,247,.2);
+    background: rgba(239,68,68,.2); color: #f87171;
+    border-color: rgba(239,68,68,.6);
+    box-shadow: 0 0 14px rgba(239,68,68,.3);
+    animation: pulseRed 2s ease-in-out infinite;
   }
   .btn-toggle-lead.activo:hover:not(:disabled) {
-    background: rgba(168,85,247,.25); box-shadow: 0 0 16px rgba(168,85,247,.35);
+    background: rgba(239,68,68,.32); box-shadow: 0 0 24px rgba(239,68,68,.45);
   }
-  .btn-toggle-lead:disabled { opacity: .5; cursor: default; transform: none; }
-  .btn-toggle-icon { font-size: .8rem; line-height: 1; }
+  .btn-toggle-lead:disabled { opacity: .5; cursor: default; transform: none; animation: none; }
+  .btn-toggle-icon { font-size: .88rem; line-height: 1; }
 
   /* Mobile WA */
   @media(max-width:640px) {
@@ -2967,6 +3048,13 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       <div class="wa-search-wrap">
         <input type="text" id="wa-search" class="wa-search-input" placeholder="&#128269; Buscar contacto..." oninput="filtrarContactos(this.value)">
       </div>
+      <!-- Filtros de estado -->
+      <div class="wa-status-filter-wrap">
+        <button class="wa-sf-btn active" id="sf-todos"       onclick="filtrarPorEstado('')">Todos</button>
+        <button class="wa-sf-btn"        id="sf-respondio"   onclick="filtrarPorEstado('respondio')">Respondieron</button>
+        <button class="wa-sf-btn"        id="sf-sin-resp"    onclick="filtrarPorEstado('sin-resp')">Sin resp.</button>
+        <button class="wa-sf-btn manual" id="sf-manual"      onclick="filtrarPorEstado('manual')">Manual</button>
+      </div>
       <div class="wa-tag-filter-wrap">
         <select id="wa-tag-filter" class="wa-tag-filter-select" onchange="filtrarPorTag(this.value)">
           <option value="">&#127991; Todos los tags</option>
@@ -3002,6 +3090,15 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         <!-- Header -->
         <div class="wa-chat-hdr" id="wa-chat-hdr">
           <button id="btn-wa-back" onclick="history.back()" title="Volver">&#8592;</button>
+        </div>
+
+        <!-- Banner MODO MANUAL -->
+        <div class="wa-manual-banner" id="wa-manual-banner">
+          <span style="font-size:1.1rem">&#128683;</span>
+          <div>
+            <div class="wa-manual-banner-text">MODO MANUAL &mdash; Valentina pausada</div>
+            <div class="wa-manual-banner-sub">Est&aacute;s respondiendo t&uacute; directamente. Valentina no enviar&aacute; mensajes.</div>
+          </div>
         </div>
 
         <!-- Notas internas -->
@@ -4283,7 +4380,7 @@ function conectarSSE() {
         actualizarConversaciones();
         if (contactoActivo && contactoActivo.replace(/\\s/g,'') === d.telefono.replace(/\\s/g,'')) {
           if (!_chatUltimoTS || d.ts > _chatUltimoTS) {
-            waAgregarBurbuja(d.role, d.content, d.ts);
+            waAgregarBurbuja(d.role, d.content, d.ts, d.estado_lead || '');
             waScrollAbajo();
             _chatUltimoTS = d.ts;
           }
@@ -4325,9 +4422,22 @@ async function actualizarConversaciones() {
   } catch(err) { console.error('[LiveChat] actualizarConversaciones error:', err); }
 }
 
-let _tagFilter = '';
+let _tagFilter    = '';
+let _statusFilter = '';   // '' | 'respondio' | 'sin-resp' | 'manual'
 function filtrarContactos(q) { _searchQuery = q.toLowerCase(); renderConvList(); }
 function filtrarPorTag(tag) { _tagFilter = tag; renderConvList(); }
+function filtrarPorEstado(estado) {
+  _statusFilter = estado;
+  // Activar botón correcto
+  ['sf-todos','sf-respondio','sf-sin-resp','sf-manual'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.remove('active');
+  });
+  const mapa = { '':'sf-todos', 'respondio':'sf-respondio', 'sin-resp':'sf-sin-resp', 'manual':'sf-manual' };
+  const btn = document.getElementById(mapa[estado] || 'sf-todos');
+  if (btn) btn.classList.add('active');
+  renderConvList();
+}
 
 function renderConvList() {
   const el = document.getElementById('wa-conv-list');
@@ -4343,32 +4453,60 @@ function renderConvList() {
   if (_tagFilter) {
     lista = lista.filter(c => (c.tags||[]).includes(_tagFilter));
   }
+  if (_statusFilter === 'respondio') {
+    lista = lista.filter(c => c.ultimo_rol === 'user');
+  } else if (_statusFilter === 'sin-resp') {
+    lista = lista.filter(c => c.ultimo_rol === 'assistant');
+  } else if (_statusFilter === 'manual') {
+    lista = lista.filter(c => c.modo_humano);
+  }
 
   // Actualizar contador con el número filtrado
   const cnt = document.getElementById('wa-conv-count');
-  if (cnt) cnt.textContent = _tagFilter || _searchQuery
+  const hayFiltro = _tagFilter || _searchQuery || _statusFilter;
+  if (cnt) cnt.textContent = hayFiltro
     ? `${lista.length} / ${conversaciones.length}`
     : conversaciones.length;
   if (!lista.length) {
-    el.innerHTML = `<div class="empty" style="padding:2.5rem 1rem;text-align:center">${_searchQuery?'Sin resultados':'Sin conversaciones'}</div>`;
+    el.innerHTML = `<div class="empty" style="padding:2.5rem 1rem;text-align:center">${hayFiltro?'Sin resultados':'Sin conversaciones'}</div>`;
     return;
   }
   el.innerHTML = lista.map(c => {
-    const activo      = c.telefono===contactoActivo?' active':'';
-    const nombre      = c.nombre||c.telefono;
-    const inicial     = nombre.replace(/[^a-zA-Z0-9]/g,'').charAt(0).toUpperCase()||'#';
-    const color       = avatarColor(c.telefono);
-    const safeTel     = c.telefono.replace(/['"<>&]/g,'');
-    const preview     = (c.ultimo_rol==='assistant'?'\u21A9 ':'')+esc((c.ultimo_mensaje||'').slice(0,50));
-    const score       = c.score || 0;
-    const prioridad   = c.prioridad || '\u26AA';
-    const scoreColor  = score>=70?'var(--red)':score>=40?'var(--orange)':'var(--txt3)';
-    const badge       = c.modo_humano
-      ? '<span class="modo-badge humano">Humano</span>'
+    const activo     = c.telefono===contactoActivo?' active':'';
+    const nombre     = c.nombre||c.telefono;
+    const inicial    = nombre.replace(/[^a-zA-Z0-9]/g,'').charAt(0).toUpperCase()||'#';
+    const color      = avatarColor(c.telefono);
+    const safeTel    = c.telefono.replace(/['"<>&]/g,'');
+    const score      = c.score || 0;
+    const prioridad  = c.prioridad || '\u26AA';
+    const scoreColor = score>=70?'var(--red)':score>=40?'var(--orange)':'var(--txt3)';
+
+    // Badge respondió / sin respuesta (según quién habló último)
+    const respondio = c.ultimo_rol === 'user';
+    const respBadge = respondio
+      ? '<span class="wa-resp-badge respondio">&#10003; Respondi\u00f3</span>'
+      : '<span class="wa-resp-badge sin-resp">Sin respuesta</span>';
+
+    // Indicador "atendido por"
+    let atendidoHtml = '';
+    if (c.modo_humano) {
+      atendidoHtml = '<span class="wa-atendido yo">&#128100; Atendido por ti</span>';
+    } else if (c.ultimo_rol === 'assistant') {
+      atendidoHtml = '<span class="wa-atendido valentina">&#129302; Valentina</span>';
+    }
+
+    // Badge modo
+    const badge = c.modo_humano
+      ? '<span class="modo-badge humano">Manual</span>'
       : '<span class="modo-badge bot">Bot</span>';
     const toggleBtn = c.modo_humano
       ? `<button class="wa-quick-liberar" title="Liberar IA" onclick="event.stopPropagation();quickLiberar('${safeTel}')">&#9646;&#9646;</button>`
       : `<button class="wa-quick-tomar"   title="Tomar lead" onclick="event.stopPropagation();quickTomar('${safeTel}',this)">&#128100;</button>`;
+
+    // Preview: prefijo según quién habló último
+    const previewPfx = c.ultimo_rol==='assistant' ? '\u{1F916} ' : '\u{1F464} ';
+    const preview = previewPfx + esc((c.ultimo_mensaje||'').slice(0,48));
+
     const TC=['#00D4FF','#c084fc','#f59e0b','#22c55e','#ef4444','#3b82f6','#f97316','#10b981'];
     const tc=t=>{let h=0;for(let i=0;i<t.length;i++)h=(Math.imul(31,h)+t.charCodeAt(i))|0;return TC[Math.abs(h)%TC.length];};
     const tagsHtml = c.tags && c.tags.length
@@ -4376,7 +4514,7 @@ function renderConvList() {
       : '';
     const sinResp = fmtSinRespuesta(c.ultimo_user_ts);
     const sinRespHtml = sinResp
-      ? `<span class="wa-sin-resp ${sinResp.clase}" title="Sin respuesta del lead">${sinResp.texto}</span>`
+      ? `<span class="wa-sin-resp ${sinResp.clase}" title="Tiempo sin respuesta">${sinResp.texto}</span>`
       : '';
     return `
     <div class="wa-conv-item${activo}" id="wconv-${safeTel}" onclick="seleccionarContacto('${safeTel}')">
@@ -4389,9 +4527,12 @@ function renderConvList() {
         </div>
         <div class="wa-conv-preview-row">
           <span class="wa-conv-preview">${preview}</span>
-          <span class="wa-conv-badges">${sinRespHtml}<span class="wa-conv-score" style="color:${scoreColor}">${score}</span>${badge}${toggleBtn}</span>
+          <span class="wa-conv-badges">${respBadge}${sinRespHtml}<span class="wa-conv-score" style="color:${scoreColor}">${score}</span>${badge}${toggleBtn}</span>
         </div>
-        ${tagsHtml}
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:.15rem">
+          ${atendidoHtml}
+          ${tagsHtml}
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -4660,21 +4801,23 @@ function renderChatHeader(telefono, modoHumano) {
   const estado    = conv ? (conv.estado || 'nuevo') : 'nuevo';
   const scoreColor= score>=70?'#ff4d6d':score>=40?'#f4a261':'#888';
   const hint   = document.getElementById('wa-human-hint');
+  const banner = document.getElementById('wa-manual-banner');
   const input  = document.getElementById('wa-input');
   const btn    = document.getElementById('wa-send-btn');
-  if (hint)  hint.style.display  = modoHumano ? 'block' : 'none';
+  if (hint)   hint.style.display  = modoHumano ? 'block' : 'none';
+  if (banner) banner.classList.toggle('visible', modoHumano);
   if (input) {
-    input.disabled = false;  // siempre habilitado — el dashboard puede enviar en cualquier modo
+    input.disabled = false;
     input.classList.toggle('modo-humano', modoHumano);
     input.placeholder = modoHumano
-      ? 'Modo humano — escribe y presiona Enter...'
+      ? 'Modo manual — escribe y presiona Enter...'
       : 'Mensaje manual (bot sigue activo)...';
   }
   if (btn) { btn.disabled = false; btn.classList.toggle('modo-humano', modoHumano); }
   const tags   = conv ? (conv.tags || []) : [];
   const actions = modoHumano
     ? `<button class="btn-toggle-lead activo" onclick="liberarLeadChat('${safeTel}')">
-         <span class="btn-toggle-icon">&#9646;&#9646;</span> Liberar IA
+         <span class="btn-toggle-icon">&#9646;&#9646;</span> Liberar IA &mdash; reactivar Valentina
        </button>`
     : `<button class="btn-toggle-lead" onclick="tomarLeadChat('${safeTel}',this)">
          <span class="btn-toggle-icon">&#128100;</span> Tomar Lead
@@ -4758,7 +4901,7 @@ async function cargarMensajes(telefono) {
     for (const m of d.mensajes) {
       const lbl = fmtDateLabel(m.timestamp);
       if (lbl && lbl !== lastLabel) { html += `<div class="wa-date-sep">${lbl}</div>`; lastLabel = lbl; }
-      html += waBurbuja(m.role, m.content, m.timestamp);
+      html += waBurbuja(m.role, m.content, m.timestamp, m.estado_lead || '');
     }
     el.innerHTML = html;
     _chatUltimoTS = d.mensajes[d.mensajes.length-1].timestamp || '';
@@ -4768,16 +4911,25 @@ async function cargarMensajes(telefono) {
   }
 }
 
-function waBurbuja(role, content, ts) {
-  return `<div class="wa-bubble-wrap ${role}"><div class="wa-bubble ${role}">${esc(content)}</div><div class="wa-bubble-time">${fmtTime(ts)}</div></div>`;
+function waBurbuja(role, content, ts, estadoLead) {
+  // owner = mensaje enviado por el operador humano (yo) desde el dashboard
+  const isOwner = role === 'assistant' && estadoLead === 'modo_humano';
+  const wrapCls = isOwner ? 'owner' : role;
+  const bubbleCls = isOwner ? 'owner' : role;
+  const senderLabel = role === 'user'
+    ? '<div class="wa-bubble-sender">&#128100; Cliente</div>'
+    : isOwner
+      ? '<div class="wa-bubble-sender">&#128100; Yo</div>'
+      : '<div class="wa-bubble-sender">&#129302; Valentina</div>';
+  return `<div class="wa-bubble-wrap ${wrapCls}">${senderLabel}<div class="wa-bubble ${bubbleCls}">${esc(content)}</div><div class="wa-bubble-time">${fmtTime(ts)}</div></div>`;
 }
 
-function waAgregarBurbuja(role, content, ts) {
+function waAgregarBurbuja(role, content, ts, estadoLead) {
   const el = document.getElementById('wa-messages');
   const empty = el.querySelector('.empty');
   if (empty) empty.remove();
   const wrap = document.createElement('div');
-  wrap.innerHTML = waBurbuja(role, content, ts);
+  wrap.innerHTML = waBurbuja(role, content, ts, estadoLead || '');
   el.appendChild(wrap.firstElementChild);
 }
 
@@ -4797,7 +4949,7 @@ async function waSend() {
   const btn = document.getElementById('wa-send-btn');
   btn.disabled = true; input.disabled = true;
   const tsLocal = new Date().toISOString();
-  waAgregarBurbuja('assistant', texto, tsLocal);
+  waAgregarBurbuja('assistant', texto, tsLocal, 'modo_humano');
   waScrollAbajo();
   _chatUltimoTS = tsLocal;
   input.value = ''; input.style.height = 'auto';
@@ -4831,19 +4983,20 @@ async function abrirChatCompleto(telefono, nombre) {
     if (!r.ok) throw new Error('HTTP '+r.status);
     const d = await r.json();
     if (!d.mensajes||!d.mensajes.length) { msgsEl.innerHTML='<div class="empty">Sin mensajes</div>'; return; }
-    msgsEl.innerHTML = d.mensajes.map(m => modalBurbuja(m.role, m.content, m.timestamp)).join('');
+    msgsEl.innerHTML = d.mensajes.map(m => modalBurbuja(m.role, m.content, m.timestamp, m.estado_lead||'')).join('');
     msgsEl.scrollTop = msgsEl.scrollHeight;
   } catch(err) { msgsEl.innerHTML=`<div class="empty">Error (${err.message})</div>`; }
 }
 function cerrarModal() { document.getElementById('modal-chat').style.display = 'none'; }
-function modalBurbuja(role, content, ts) {
-  const isBot=role==='assistant';
-  const align=isBot?'flex-end':'flex-start';
-  const bg=isBot?'rgba(0,212,255,0.1)':'rgba(255,255,255,0.06)';
-  const bdr=isBot?'1px solid rgba(0,212,255,0.22)':'1px solid rgba(255,255,255,0.1)';
-  const br=isBot?'16px 16px 4px 16px':'16px 16px 16px 4px';
-  const label=isBot?'Valentina':'Cliente';
-  const lclr=isBot?'var(--neon)':'rgba(255,255,255,.4)';
+function modalBurbuja(role, content, ts, estadoLead) {
+  const isOwner = role === 'assistant' && estadoLead === 'modo_humano';
+  const isBot   = role === 'assistant' && !isOwner;
+  const align   = role === 'user' ? 'flex-start' : 'flex-end';
+  const bg      = isOwner ? 'rgba(34,197,94,0.12)'  : isBot ? 'rgba(0,212,255,0.1)' : 'rgba(255,255,255,0.06)';
+  const bdr     = isOwner ? '1px solid rgba(34,197,94,0.25)' : isBot ? '1px solid rgba(0,212,255,0.22)' : '1px solid rgba(255,255,255,0.1)';
+  const br      = role === 'user' ? '16px 16px 16px 4px' : '16px 16px 4px 16px';
+  const label   = isOwner ? '&#128100; Yo' : isBot ? '&#129302; Valentina' : '&#128100; Cliente';
+  const lclr    = isOwner ? 'rgba(34,197,94,.8)' : isBot ? 'var(--neon)' : 'rgba(255,255,255,.4)';
   return `<div style="display:flex;flex-direction:column;align-items:${align};gap:.2rem">
     <span style="font-size:.58rem;color:${lclr};letter-spacing:.06em;text-transform:uppercase;font-weight:600">${label}</span>
     <div style="max-width:78%;background:${bg};border:${bdr};border-radius:${br};padding:.65rem 1rem;font-size:.85rem;line-height:1.5;word-break:break-word;white-space:pre-wrap">${esc(content)}</div>

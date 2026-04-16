@@ -2,28 +2,32 @@
 # Conexión Sin Límites
 
 """
-Arma el system prompt de Valentina combinando:
-  1. Prompt base  → config/prompts.yaml (o override en config_json del cliente)
-  2. Catálogo     → sección del YAML o reemplazo desde config_json
-  3. Objeciones   → sección del YAML o reemplazo desde config_json
-  4. Cierres      → sección del YAML o reemplazo desde config_json
-  5. Estado lead  → datos frescos de PostgreSQL (no cacheados)
-  6. Resumen      → lead_resumen + objeciones actuales del lead
+Construye el system prompt para cada mensaje entrante combinando:
 
-Cache en memoria con TTL de 5 minutos para la config del cliente (config_json).
-Los datos del lead se consultan siempre frescos — cambian en cada mensaje.
+  RUTA A — BD disponible y config_json completo:
+    prompt_base.txt  +  {catalogo}  +  {objeciones}  +  {cierres}
+    tomados de clientes.config_json en PostgreSQL.
+
+  RUTA B — Fallback (BD falla o config_json sin secciones):
+    config/prompts.yaml  completo, sin modificaciones.
+
+  En ambas rutas se agrega al final el bloque CONTEXTO DEL LEAD
+  con datos frescos de la tabla leads (estado, score, resumen, etc.).
+
+Cache en memoria con TTL de 5 minutos, indexado por cliente_id cuando
+está disponible o por cliente_slug en caso contrario.
+Los datos del lead nunca se cachean — cambian en cada mensaje.
 
 ─────────────────────────────────────────────────────────────────
-Esquema esperado en clientes.config_json (todos opcionales):
+Esquema esperado en clientes.config_json:
 {
-  "prompt_base":   "...",   // reemplaza system_prompt del YAML
-  "catalogo":      "...",   // reemplaza la sección CATÁLOGO DEL YAML
-  "objeciones":    "...",   // reemplaza la sección MANEJO DE OBJECIONES
-  "cierres":       "...",   // reemplaza la sección cierres/reglas absolutas
-  "nombre_agente": "...",   // nombre del agente (default: Valentina)
-  "tono":          "..."    // descripción del tono (default: humano, cercano, chileno)
+  "nombre_agente": "Valentina",
+  "tono":          "cercano, vendedor, seguro, humano",
+  "catalogo":      "MOVISTAR FIBRA...",
+  "objeciones":    "\"Está caro\":\\n→ ...",
+  "cierres":       "Cierre suave — ..."
 }
-Si config_json está vacío o no tiene una clave, se usa el YAML como fallback.
+Si faltan "catalogo", "objeciones" o "cierres" se usa el YAML completo.
 ─────────────────────────────────────────────────────────────────
 """
 
@@ -37,12 +41,17 @@ from agent.database import get_pool
 logger = logging.getLogger("agentkit")
 
 # ── Cache en memoria ───────────────────────────────────────────
-# Clave: cliente_slug  |  Valor: (config_dict, timestamp_unix)
+# Clave: "id:<cliente_id>" o "slug:<cliente_slug>"
+# Valor: (config_dict, timestamp_monotonic)
 _cache: dict[str, tuple[dict, float]] = {}
 CACHE_TTL = 300  # 5 minutos
 
+# Secciones que deben estar todas presentes en config_json
+# para usar la Ruta A. Si falta alguna se cae a Ruta B (YAML).
+_SECCIONES_REQUERIDAS = ("catalogo", "objeciones", "cierres")
 
-# ── Carga del YAML base ────────────────────────────────────────
+
+# ── Lectura de archivos de configuración ──────────────────────
 
 def _cargar_yaml() -> dict:
     """Lee config/prompts.yaml. Retorna {} si no existe."""
@@ -54,69 +63,147 @@ def _cargar_yaml() -> dict:
         return {}
 
 
-# ── Acceso a config_json del cliente (con cache) ───────────────
+def _cargar_prompt_base_txt() -> str:
+    """
+    Lee config/prompt_base.txt — template con placeholders:
+    {agente_nombre}, {tono}, {catalogo}, {objeciones}, {cierres},
+    {estado}, {resumen}.
+    Retorna None si no existe.
+    """
+    try:
+        with open("config/prompt_base.txt", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        logger.warning("prompt_builder: config/prompt_base.txt no encontrado")
+        return None
 
-async def _obtener_config_cliente(cliente_slug: str) -> dict:
+
+# ── Cache y acceso a config_json del cliente ──────────────────
+
+def _cache_key(cliente_id: int | None, cliente_slug: str) -> str:
+    """Genera la clave de cache. Prefiere id cuando está disponible."""
+    if cliente_id is not None:
+        return f"id:{cliente_id}"
+    return f"slug:{cliente_slug}"
+
+
+async def _obtener_config_cliente(
+    cliente_slug: str,
+    cliente_id: int | None = None,
+) -> dict:
     """
-    Devuelve el dict parseado de clientes.config_json para el slug dado.
-    Usa cache de 5 minutos — evita consultar la BD en cada mensaje.
+    Devuelve el dict de clientes.config_json para el cliente indicado.
+    Usa cache de 5 minutos para no consultar la BD en cada mensaje.
+    En caso de error de BD retorna {} (activando el fallback al YAML).
     """
+    key   = _cache_key(cliente_id, cliente_slug)
     ahora = time.monotonic()
-    entrada = _cache.get(cliente_slug)
 
+    entrada = _cache.get(key)
     if entrada is not None:
         config, ts = entrada
         if ahora - ts < CACHE_TTL:
             return config
-        # TTL expirado → borrar y recargar
-        del _cache[cliente_slug]
+        del _cache[key]
 
-    config = await _consultar_config_bd(cliente_slug)
-    _cache[cliente_slug] = (config, ahora)
+    config = await _consultar_config_bd(cliente_slug, cliente_id)
+    _cache[key] = (config, ahora)
     return config
 
 
-async def _consultar_config_bd(cliente_slug: str) -> dict:
-    """Consulta clientes.config_json desde PostgreSQL."""
+async def _consultar_config_bd(
+    cliente_slug: str,
+    cliente_id: int | None = None,
+) -> dict:
+    """Consulta clientes.config_json. Usa id si está disponible, sino slug."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            fila = await conn.fetchrow(
-                "SELECT config_json FROM clientes WHERE slug = $1 AND activo = TRUE",
-                cliente_slug,
-            )
+            if cliente_id is not None:
+                fila = await conn.fetchrow(
+                    "SELECT config_json FROM clientes WHERE id = $1 AND activo = TRUE",
+                    cliente_id,
+                )
+            else:
+                fila = await conn.fetchrow(
+                    "SELECT config_json FROM clientes WHERE slug = $1 AND activo = TRUE",
+                    cliente_slug,
+                )
 
         if not fila or not fila["config_json"]:
             return {}
 
         raw = fila["config_json"]
-        # config_json puede estar guardado como string JSON o como dict (jsonb)
         if isinstance(raw, str):
             return json.loads(raw)
         return dict(raw)
 
     except Exception as e:
-        logger.error(f"prompt_builder: error al leer config_json de '{cliente_slug}': {e}")
-        return {}
+        logger.error(
+            f"prompt_builder: error al leer config_json "
+            f"(id={cliente_id}, slug={cliente_slug!r}): {e}"
+        )
+        return {}   # Ruta B — fallback al YAML
 
 
-def invalidar_cache(cliente_slug: str):
+def invalidar_cache(cliente_slug: str = "", cliente_id: int | None = None):
     """
-    Elimina la entrada cacheada de un cliente para forzar recarga inmediata.
-    Útil cuando se actualiza config_json desde el dashboard o scripts.
+    Elimina la entrada cacheada para forzar recarga inmediata.
+    Acepta cliente_slug, cliente_id, o ambos.
     """
-    _cache.pop(cliente_slug, None)
-    logger.info(f"prompt_builder: cache invalidado para '{cliente_slug}'")
+    removed = 0
+    for key in (f"id:{cliente_id}", f"slug:{cliente_slug}"):
+        if _cache.pop(key, None) is not None:
+            removed += 1
+    if removed:
+        logger.info(f"prompt_builder: cache invalidado (id={cliente_id}, slug={cliente_slug!r})")
 
 
-# ── Sección dinámica de estado del lead ───────────────────────
+# ── Bloque de contexto del lead (siempre fresco) ──────────────
 
-def _seccion_estado_lead(lead: dict | None) -> str:
+def _estado_inline(lead: dict) -> str:
     """
-    Genera el bloque de contexto del lead para inyectar al final del prompt.
-    Siempre se construye con datos frescos — no se cachea.
+    Genera una representación compacta del estado del lead
+    para rellenar el placeholder {estado} de prompt_base.txt.
     """
-    if not lead:
+    estado      = (lead.get("estado") or "nuevo").upper()
+    score       = lead.get("score") or 0
+    msgs        = lead.get("mensajes_en_estado") or 0
+    producto    = lead.get("subproducto") or lead.get("producto_principal") or ""
+    comuna      = lead.get("comuna") or ""
+
+    objeciones_raw = lead.get("objeciones") or "[]"
+    try:
+        obs = json.loads(objeciones_raw) if isinstance(objeciones_raw, str) else list(objeciones_raw)
+    except (json.JSONDecodeError, TypeError):
+        obs = []
+
+    lineas = [f"Estado: {estado} | Score: {score}/100 | Mensajes en estado: {msgs}"]
+    if producto:
+        lineas.append(f"Producto/Plan: {producto}")
+    if comuna:
+        lineas.append(f"Comuna: {comuna}")
+    if obs:
+        lineas.append(f"Objeciones detectadas: {', '.join(obs)}")
+
+    instruccion = _instruccion_por_estado(estado, msgs, obs)
+    if instruccion:
+        lineas.append(f"INSTRUCCION ACTIVA: {instruccion}")
+
+    return "\n".join(lineas)
+
+
+def _seccion_estado_lead(
+    lead: dict | None,
+    estado_override: str | None = None,
+    resumen_override: str | None = None,
+) -> str:
+    """
+    Genera el bloque completo CONTEXTO DEL LEAD para anexar al prompt.
+    Se usa en la Ruta B (YAML fallback) o cuando se quiere el bloque completo.
+    estado_override y resumen_override permiten pasar valores ya extraídos.
+    """
+    if not lead and not estado_override:
         return (
             "\n\n─────────────────────────────────────────────\n"
             "CONTEXTO DEL LEAD\n"
@@ -124,33 +211,36 @@ def _seccion_estado_lead(lead: dict | None) -> str:
             "─────────────────────────────────────────────"
         )
 
-    estado         = (lead.get("estado") or "nuevo").upper()
-    score          = lead.get("score") or 0
-    msgs_estado    = lead.get("mensajes_en_estado") or 0
-    producto       = lead.get("subproducto") or lead.get("producto_principal") or ""
-    comuna         = lead.get("comuna") or ""
-    resumen        = (lead.get("lead_resumen") or "").strip()
-    nombre         = (lead.get("nombre") or "").strip()
+    if lead:
+        estado   = estado_override or (lead.get("estado") or "nuevo").upper()
+        score    = lead.get("score") or 0
+        msgs     = lead.get("mensajes_en_estado") or 0
+        producto = lead.get("subproducto") or lead.get("producto_principal") or ""
+        comuna   = lead.get("comuna") or ""
+        resumen  = resumen_override or (lead.get("lead_resumen") or "").strip()
+        nombre   = (lead.get("nombre") or "").strip()
 
-    # Objeciones guardadas como JSON array ["precio", "contrato"]
-    objeciones_raw = lead.get("objeciones") or "[]"
-    try:
-        if isinstance(objeciones_raw, str):
-            objeciones_list = json.loads(objeciones_raw)
-        else:
-            objeciones_list = list(objeciones_raw)
-    except (json.JSONDecodeError, TypeError):
-        objeciones_list = []
+        tags_raw = lead.get("tags") or "[]"
+        try:
+            tags = json.loads(tags_raw) if isinstance(tags_raw, str) else list(tags_raw)
+        except (json.JSONDecodeError, TypeError):
+            tags = []
 
-    # Tags guardadas como JSON array
-    tags_raw = lead.get("tags") or "[]"
-    try:
-        if isinstance(tags_raw, str):
-            tags_list = json.loads(tags_raw)
-        else:
-            tags_list = list(tags_raw)
-    except (json.JSONDecodeError, TypeError):
-        tags_list = []
+        objeciones_raw = lead.get("objeciones") or "[]"
+        try:
+            obs = json.loads(objeciones_raw) if isinstance(objeciones_raw, str) else list(objeciones_raw)
+        except (json.JSONDecodeError, TypeError):
+            obs = []
+    else:
+        estado   = (estado_override or "nuevo").upper()
+        score    = 0
+        msgs     = 0
+        producto = ""
+        comuna   = ""
+        resumen  = resumen_override or ""
+        nombre   = ""
+        tags     = []
+        obs      = []
 
     lineas = [
         "",
@@ -159,66 +249,50 @@ def _seccion_estado_lead(lead: dict | None) -> str:
         "─────────────────────────────────────────────",
         f"Estado en CRM : {estado}",
         f"Score         : {score}/100",
-        f"Mensajes en '{estado.lower()}': {msgs_estado}",
+        f"Mensajes en '{estado.lower()}': {msgs}",
     ]
-
     if nombre:
         lineas.append(f"Nombre         : {nombre}")
     if producto:
         lineas.append(f"Producto/Plan  : {producto}")
     if comuna:
         lineas.append(f"Comuna         : {comuna}")
-    if objeciones_list:
-        lineas.append(f"Objeciones     : {', '.join(objeciones_list)}")
-    if tags_list:
-        lineas.append(f"Tags           : {', '.join(tags_list)}")
+    if obs:
+        lineas.append(f"Objeciones     : {', '.join(obs)}")
+    if tags:
+        lineas.append(f"Tags           : {', '.join(tags)}")
     if resumen:
-        lineas.append(f"\nResumen de la conversación:")
-        lineas.append(f'"{resumen}"')
+        lineas.append(f'\nResumen: "{resumen}"')
 
-    # Instrucciones operativas según estado actual
-    instruccion = _instruccion_por_estado(estado, msgs_estado, objeciones_list)
+    instruccion = _instruccion_por_estado(estado, msgs, obs)
     if instruccion:
-        lineas.append(f"\n⚡ INSTRUCCIÓN ACTIVA: {instruccion}")
+        lineas.append(f"\nINSTRUCCION ACTIVA: {instruccion}")
 
     lineas.append("─────────────────────────────────────────────")
     return "\n".join(lineas)
 
 
 def _instruccion_por_estado(estado: str, msgs: int, objeciones: list) -> str:
-    """
-    Devuelve una instrucción operativa concreta según el estado y
-    los mensajes acumulados. Refuerza la máquina de estados del prompt base.
-    """
+    """Instrucción operativa concreta según el estado y mensajes acumulados."""
     estado = estado.upper()
 
     if estado == "DIRECCION_OBTENIDA":
         return "Dirección recibida. Confirmar datos y disparar alerta al supervisor AHORA."
-
     if estado == "LISTO_PARA_CIERRE":
         return "Lead listo. Enviar mensaje de cierre y confirmar que el supervisor contactará."
-
     if estado in ("NUEVO", "CONTACTADO") and msgs == 0:
         return "Primera interacción — NO ofrecer nada todavía. Generar confianza primero."
-
     if estado == "INTERESADO" and msgs >= 3:
         return (
-            "ESTANCAMIENTO en INTERESADO. Cambiar estrategia: "
-            "hacer UNA pregunta de cierre directa o simplificar la propuesta."
+            "ESTANCAMIENTO en INTERESADO. Hacer UNA pregunta de cierre directa "
+            "o simplificar la propuesta."
         )
-
     if estado == "TIBIO" and msgs >= 2:
-        return (
-            "ESTANCAMIENTO en TIBIO. Simplificar y empujar cierre: "
-            "pedir dirección ahora para verificar cobertura."
-        )
-
+        return "ESTANCAMIENTO en TIBIO. Pedir dirección ahora para verificar cobertura."
     if estado == "CALIENTE":
         return "Modo cierre activo — solo pedir dirección. No dar más información."
-
     if objeciones:
         return f"Resolver objeción '{objeciones[-1]}' antes de avanzar al siguiente paso."
-
     return ""
 
 
@@ -227,75 +301,92 @@ def _instruccion_por_estado(estado: str, msgs: int, objeciones: list) -> str:
 async def construir_prompt(
     telefono: str,
     cliente_slug: str = "csl",
+    cliente_id: int | None = None,
     lead: dict | None = None,
 ) -> str:
     """
-    Construye y devuelve el system prompt completo para una conversación.
+    Construye el system prompt completo para una conversación entrante.
 
-    Combina en orden:
-      1. Prompt base        → YAML o override en config_json["prompt_base"]
-      2. Catálogo           → config_json["catalogo"] si existe (reemplaza sección del YAML)
-      3. Objeciones extra   → config_json["objeciones"] si existe
-      4. Cierres extra      → config_json["cierres"] si existe
-      5. Estado del lead    → datos frescos (no cacheados)
+    Ruta A — config_json completo en BD:
+      Rellena los placeholders de config/prompt_base.txt con los valores
+      de clientes.config_json (catalogo, objeciones, cierres, agente_nombre, tono)
+      y agrega el bloque de contexto del lead al final.
+
+    Ruta B — Fallback (BD falla o config_json incompleto):
+      Usa config/prompts.yaml completo (system_prompt) y agrega el bloque
+      de contexto del lead al final. El comportamiento es idéntico al
+      sistema anterior, garantizando continuidad del servicio.
 
     Args:
-        telefono:     Teléfono del cliente (se usa para identificar el lead si no se pasa)
-        cliente_slug: Slug del cliente en tabla `clientes` (default: "csl")
-        lead:         Dict con datos del lead ya cargados. Si es None, se consulta la BD.
+        telefono:     Teléfono del cliente. Se usa para cargar el lead si
+                      no se pasa el parámetro `lead`.
+        cliente_slug: Slug del cliente en tabla `clientes` (default: "csl").
+        cliente_id:   ID entero del cliente — lookup más rápido que por slug.
+                      Si se provee, tiene prioridad sobre cliente_slug en la BD.
+        lead:         Dict con datos del lead ya cargados desde main.py.
+                      Si es None, se consulta la tabla leads por teléfono.
 
     Returns:
-        String listo para usar como `system=` en la llamada a Claude API.
+        String listo para usar como parámetro `system=` en la API de Claude.
     """
-    # 1. Cargar config del cliente (cacheada 5 min)
-    config = await _obtener_config_cliente(cliente_slug)
-
-    # 2. Prompt base: config_json["prompt_base"] tiene prioridad sobre el YAML
-    if config.get("prompt_base"):
-        prompt_base = config["prompt_base"].strip()
-        logger.debug(f"prompt_builder: usando prompt_base de config_json para '{cliente_slug}'")
-    else:
-        yaml_data   = _cargar_yaml()
-        prompt_base = yaml_data.get("system_prompt", "Eres un asistente útil. Responde en español.")
-        prompt_base = prompt_base.strip()
-
-    secciones = [prompt_base]
-
-    # 3. Catálogo — reemplaza la sección si viene en config_json
-    if config.get("catalogo"):
-        secciones.append(
-            "\n───────────────────────────────────────────────\n"
-            "CATÁLOGO DE PLANES (configuración del cliente)\n"
-            "───────────────────────────────────────────────\n"
-            + config["catalogo"].strip()
-        )
-        logger.debug(f"prompt_builder: catálogo personalizado para '{cliente_slug}'")
-
-    # 4. Objeciones extra — agrega o reemplaza
-    if config.get("objeciones"):
-        secciones.append(
-            "\n───────────────────────────────────────────────\n"
-            "MANEJO DE OBJECIONES (configuración del cliente)\n"
-            "───────────────────────────────────────────────\n"
-            + config["objeciones"].strip()
-        )
-
-    # 5. Cierres extra — agrega o reemplaza
-    if config.get("cierres"):
-        secciones.append(
-            "\n───────────────────────────────────────────────\n"
-            "TÉCNICAS DE CIERRE (configuración del cliente)\n"
-            "───────────────────────────────────────────────\n"
-            + config["cierres"].strip()
-        )
-
-    # 6. Estado del lead — siempre fresco
+    # ── 1. Cargar datos del lead (frescos, sin cache) ──────────
     if lead is None:
         lead = await _cargar_lead(telefono)
 
-    secciones.append(_seccion_estado_lead(lead))
+    estado  = (lead.get("estado") or "nuevo")   if lead else "nuevo"
+    resumen = (lead.get("lead_resumen") or "")   if lead else ""
 
-    return "\n".join(secciones)
+    # ── 2. Cargar config del cliente (cacheada 5 min) ──────────
+    config = await _obtener_config_cliente(cliente_slug, cliente_id)
+
+    tiene_secciones = all(config.get(s) for s in _SECCIONES_REQUERIDAS)
+
+    # ── 3A. RUTA A — BD disponible y config_json completo ──────
+    if tiene_secciones:
+        template = _cargar_prompt_base_txt()
+
+        if template:
+            try:
+                prompt = template.format(
+                    agente_nombre = config.get("nombre_agente", "Valentina"),
+                    tono          = config.get("tono", "cercano, vendedor, seguro, humano"),
+                    catalogo      = config["catalogo"].strip(),
+                    objeciones    = config["objeciones"].strip(),
+                    cierres       = config["cierres"].strip(),
+                    estado        = _estado_inline(lead) if lead else f"Estado: {estado.upper()}",
+                    resumen       = resumen or "(sin resumen disponible aún)",
+                )
+                # Agregar bloque completo de contexto al final
+                prompt += _seccion_estado_lead(lead, estado, resumen)
+                logger.debug(
+                    f"prompt_builder: Ruta A — template+config_json "
+                    f"(id={cliente_id}, slug={cliente_slug!r})"
+                )
+                return prompt
+            except KeyError as e:
+                logger.warning(
+                    f"prompt_builder: placeholder faltante en prompt_base.txt: {e} "
+                    f"— cayendo a Ruta B"
+                )
+        else:
+            logger.warning(
+                "prompt_builder: prompt_base.txt no encontrado — cayendo a Ruta B"
+            )
+
+    # ── 3B. RUTA B — Fallback al YAML completo ─────────────────
+    logger.debug(
+        f"prompt_builder: Ruta B — YAML fallback "
+        f"(tiene_secciones={tiene_secciones}, id={cliente_id}, slug={cliente_slug!r})"
+    )
+    yaml_data = _cargar_yaml()
+    base = yaml_data.get(
+        "system_prompt",
+        "Eres un asistente útil de ventas. Responde en español.",
+    ).strip()
+
+    # Agregar bloque de contexto del lead al final del YAML
+    base += _seccion_estado_lead(lead, estado, resumen)
+    return base
 
 
 async def _cargar_lead(telefono: str) -> dict | None:
@@ -307,7 +398,7 @@ async def _cargar_lead(telefono: str) -> dict | None:
                 """
                 SELECT estado, score, mensajes_en_estado, nombre,
                        subproducto, producto_principal, comuna,
-                       objeciones, tags, lead_resumen
+                       objeciones, tags, lead_resumen, cliente_id
                 FROM leads
                 WHERE telefono = $1
                 """,

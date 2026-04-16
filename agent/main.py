@@ -240,7 +240,17 @@ async def webhook_handler(request: Request):
             historial = await obtener_historial(msg.telefono)
             _log("INFO", f"Historial recuperado: {len(historial)} mensajes previos")
 
-            nombre_cliente = (lead_ref.get("nombre") or "") if lead_ref else ""
+            # Extraer campos clave del lead para el prompt_builder
+            nombre_cliente = (lead_ref.get("nombre") or "")       if lead_ref else ""
+            cliente_id     = (lead_ref.get("cliente_id"))          if lead_ref else None
+            estado_lead    = (lead_ref.get("estado") or "nuevo")   if lead_ref else "nuevo"
+            resumen_lead   = (lead_ref.get("lead_resumen") or "")  if lead_ref else ""
+
+            _log("INFO",
+                f"prompt_builder: cliente_id={cliente_id} "
+                f"estado={estado_lead} resumen={'sí' if resumen_lead else 'no'}"
+            )
+
             respuesta = await generar_respuesta(
                 msg.texto,
                 historial,
@@ -248,6 +258,7 @@ async def webhook_handler(request: Request):
                 nombre_recien_capturado,
                 telefono=msg.telefono,
                 cliente_slug=CLIENTE_SLUG,
+                cliente_id=cliente_id,
                 lead=lead_ref,
             )
             _log("INFO", f"Respuesta generada: '{respuesta[:100]}'")

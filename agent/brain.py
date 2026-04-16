@@ -48,32 +48,40 @@ async def generar_respuesta(
     nombre_recien_capturado: bool = False,
     telefono: str = "",
     cliente_slug: str = "csl",
+    cliente_id: int | None = None,
     lead: dict | None = None,
 ) -> str:
     """
     Genera una respuesta usando Claude API.
 
+    El system prompt se construye dinámicamente via prompt_builder:
+      - Ruta A: prompt_base.txt + config_json de la BD (catalogo, objeciones, cierres)
+      - Ruta B: prompts.yaml completo como fallback si la BD falla o config_json
+                está incompleto.
+    En ambas rutas se agrega el bloque de contexto del lead (estado, resumen, etc.).
+
     Args:
-        mensaje:               El mensaje nuevo del usuario
-        historial:             Lista de mensajes anteriores [{"role": ..., "content": ...}]
-        nombre_cliente:        Nombre capturado del cliente (None = desconocido)
-        nombre_recien_capturado: True si el nombre se detectó en ESTE mensaje
-        telefono:              Teléfono del cliente — usado por prompt_builder para
-                               consultar el lead si no se pasa `lead`
-        cliente_slug:          Slug del cliente en tabla `clientes` (default: "csl")
-        lead:                  Dict con datos del lead ya cargados (evita consulta extra)
+        mensaje:               El mensaje nuevo del usuario.
+        historial:             Lista de mensajes anteriores [{"role": ..., "content": ...}].
+        nombre_cliente:        Nombre capturado del cliente (None = desconocido).
+        nombre_recien_capturado: True si el nombre se detectó en ESTE mensaje.
+        telefono:              Teléfono del cliente — identifica el lead en la BD.
+        cliente_slug:          Slug del cliente en tabla `clientes` (default: "csl").
+        cliente_id:            ID entero del cliente — lookup directo, más rápido que slug.
+        lead:                  Dict con datos del lead ya cargados desde main.py.
+                               Si se pasa, evita una consulta extra a la BD.
 
     Returns:
-        La respuesta generada por Claude
+        La respuesta generada por Claude.
     """
-    # Si el mensaje es muy corto o vacío, usar fallback
     if not mensaje or len(mensaje.strip()) < 2:
         return obtener_mensaje_fallback()
 
-    # Construir prompt dinámico: base + catálogo + objeciones + cierres + estado lead
+    # Construir prompt dinámico (Ruta A o Ruta B según disponibilidad de BD)
     system_prompt = await construir_prompt(
         telefono=telefono,
         cliente_slug=cliente_slug,
+        cliente_id=cliente_id,
         lead=lead,
     )
 

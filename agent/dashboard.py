@@ -233,6 +233,28 @@ async def api_stats():
             },
         }
 
+    # Contador "Sin Respuesta" (último mensaje es del agente, lead no ha respondido)
+    try:
+        sin_respuesta_count = await conn.fetchval("""
+            SELECT COUNT(DISTINCT SPLIT_PART(REPLACE(hm.telefono,' ',''),'@',1))
+            FROM (
+                SELECT DISTINCT ON (SPLIT_PART(REPLACE(telefono,' ',''),'@',1))
+                    SPLIT_PART(REPLACE(telefono,' ',''),'@',1) AS tel,
+                    rol
+                FROM historial_mensajes
+                ORDER BY SPLIT_PART(REPLACE(telefono,' ',''),'@',1), timestamp DESC
+            ) last_msg
+            JOIN historial_mensajes hm
+              ON SPLIT_PART(REPLACE(hm.telefono,' ',''),'@',1) = last_msg.tel
+            LEFT JOIN leads l
+              ON SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1) = last_msg.tel
+            WHERE last_msg.rol = 'assistant'
+              AND (l.estado IS NULL OR l.estado NOT IN ('cerrado','modo_humano'))
+              AND (l.tags IS NULL OR l.tags NOT LIKE '%Incontactable%')
+        """) or 0
+    except Exception:
+        sin_respuesta_count = 0
+
     return JSONResponse({
         "total_leads":          total_leads,
         "leads_calientes":      leads_calientes,
@@ -242,6 +264,7 @@ async def api_stats():
         "followups_pendientes": followups_pendientes,
         "mensajes_hoy":         mensajes_hoy,
         "conversion":           conversion,
+        "sin_respuesta_count":  int(sin_respuesta_count),
         "actualizado":          datetime.now().strftime("%H:%M:%S"),
     })
 
@@ -1290,6 +1313,185 @@ async def kpi_followups():
          "programado_para": str(r["programado_para"])}
         for r in rows
     ]})
+
+
+# ── API: Sin Respuesta ────────────────────────────────────────────────────────
+
+_SIN_RESPUESTA_QUERY = """
+    WITH ultimos AS (
+        SELECT DISTINCT ON (SPLIT_PART(REPLACE(telefono,' ',''),'@',1))
+            SPLIT_PART(REPLACE(telefono,' ',''),'@',1) AS telefono,
+            rol           AS ultimo_rol,
+            timestamp     AS ultima_actividad
+        FROM historial_mensajes
+        ORDER BY SPLIT_PART(REPLACE(telefono,' ',''),'@',1), timestamp DESC
+    ),
+    primeros AS (
+        SELECT DISTINCT ON (SPLIT_PART(REPLACE(telefono,' ',''),'@',1))
+            SPLIT_PART(REPLACE(telefono,' ',''),'@',1) AS telefono,
+            timestamp AS primer_contacto
+        FROM historial_mensajes
+        WHERE rol = 'assistant'
+        ORDER BY SPLIT_PART(REPLACE(telefono,' ',''),'@',1), timestamp ASC
+    )
+    SELECT
+        u.telefono,
+        COALESCE(l.nombre,  u.telefono)  AS nombre,
+        COALESCE(l.comuna,  '')          AS ciudad,
+        COALESCE(l.estado,  'nuevo')     AS estado,
+        COALESCE(l.subproducto, '')      AS subproducto,
+        COALESCE(l.tags,    '[]')        AS tags,
+        p.primer_contacto                AS fecha_envio,
+        u.ultima_actividad,
+        ROUND(
+            EXTRACT(EPOCH FROM (NOW() - u.ultima_actividad)) / 86400.0, 1
+        )::float                         AS dias_sin_respuesta
+    FROM ultimos u
+    JOIN primeros p ON u.telefono = p.telefono
+    LEFT JOIN leads l
+      ON SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1) = u.telefono
+    WHERE u.ultimo_rol = 'assistant'
+      AND (l.estado IS NULL OR l.estado NOT IN ('cerrado','modo_humano'))
+      AND (l.tags IS NULL OR l.tags NOT LIKE '%Incontactable%')
+    ORDER BY u.ultima_actividad ASC
+    LIMIT 500
+"""
+
+
+@router.get("/api/sin-respuesta")
+async def api_sin_respuesta():
+    """Lista de leads que recibieron mensaje pero nunca respondieron."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(_SIN_RESPUESTA_QUERY)
+        resultado = []
+        for r in rows:
+            try:
+                tags = json.loads(r["tags"] or "[]")
+            except Exception:
+                tags = []
+            resultado.append({
+                "telefono":           r["telefono"],
+                "nombre":             r["nombre"],
+                "ciudad":             r["ciudad"],
+                "estado":             r["estado"],
+                "subproducto":        r["subproducto"],
+                "tags":               tags,
+                "fecha_envio":        str(r["fecha_envio"]),
+                "ultima_actividad":   str(r["ultima_actividad"]),
+                "dias_sin_respuesta": float(r["dias_sin_respuesta"] or 0),
+            })
+        return JSONResponse({"leads": resultado, "total": len(resultado)})
+    except Exception as e:
+        return JSONResponse({"leads": [], "total": 0, "error": str(e)}, status_code=500)
+
+
+@router.post("/api/sin-respuesta/{telefono}/reactivar")
+async def reactivar_lead(telefono: str, request: Request):
+    """Envía mensaje de reactivación manual al lead."""
+    tel = telefono.lstrip("+").replace(" ", "")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    mensaje = (body.get("mensaje") or "").strip()
+    if not mensaje:
+        # Mensaje de reactivación predeterminado
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT nombre FROM leads WHERE REPLACE(telefono,' ','') = $1", tel
+            )
+        nombre = (row["nombre"] or "").strip() if row else ""
+        nombre_fmt = nombre.split()[0].title() if nombre and nombre.lower() not in ("desconocido","cliente","unknown","") else ""
+        saludo = f"Hola {nombre_fmt}! " if nombre_fmt else "Hola! "
+        mensaje = (
+            f"{saludo}Te escribo nuevamente desde Conexión Sin Límites. "
+            f"Quedamos pendientes con tu consulta. "
+            f"¿Tienes un momento para que podamos ayudarte? 😊"
+        )
+    ts = datetime.utcnow().isoformat()
+    try:
+        await _crm.guardar_mensaje(tel, "assistant", mensaje, "seguimiento", None)
+        await _guardar_memoria(tel, "assistant", mensaje)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Error guardando: {e}"}, status_code=500)
+    enviado = False
+    try:
+        from agent.providers import obtener_proveedor as _get_prov
+        enviado = await _get_prov().enviar_mensaje(tel, mensaje)
+    except Exception:
+        pass
+    await broadcast_event({
+        "type": "new_message", "telefono": tel,
+        "role": "assistant", "content": mensaje, "ts": ts,
+    })
+    return JSONResponse({"ok": True, "enviado": enviado, "mensaje": mensaje})
+
+
+@router.post("/api/sin-respuesta/{telefono}/incontactable")
+async def marcar_incontactable(telefono: str):
+    """Agrega tag 'Incontactable' al lead y lo mueve a seguimiento."""
+    tel = telefono.lstrip("+").replace(" ", "")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT tags FROM leads WHERE REPLACE(telefono,' ','') = $1", tel
+        )
+        if not row:
+            return JSONResponse({"ok": False, "error": "Lead no encontrado"}, status_code=404)
+        try:
+            tags = json.loads(row["tags"] or "[]")
+        except Exception:
+            tags = []
+        if "Incontactable" not in tags:
+            tags.append("Incontactable")
+        await conn.execute(
+            "UPDATE leads SET tags = $1, estado = 'seguimiento', ultima_interaccion = CURRENT_TIMESTAMP "
+            "WHERE REPLACE(telefono,' ','') = $2",
+            json.dumps(tags), tel
+        )
+    return JSONResponse({"ok": True, "telefono": tel, "tags": tags})
+
+
+@router.get("/api/sin-respuesta/export.csv")
+async def exportar_sin_respuesta_csv():
+    """Descarga CSV con todos los leads sin respuesta."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(_SIN_RESPUESTA_QUERY)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Nombre", "Telefono", "Ciudad", "Region",
+        "Dias_sin_respuesta", "Fecha_ultimo_intento",
+        "Fecha_primer_contacto", "Estado", "Promocion_original",
+    ])
+    for r in rows:
+        dias = float(r["dias_sin_respuesta"] or 0)
+        writer.writerow([
+            r["nombre"],
+            r["telefono"],
+            r["ciudad"],
+            "",   # región no está en la BD, dejar vacío
+            f"{dias:.1f}",
+            str(r["ultima_actividad"])[:19],
+            str(r["fecha_envio"])[:19],
+            r["estado"],
+            r["subproducto"],
+        ])
+    output.seek(0)
+    filename = f"sin_respuesta_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 # ── HTML del dashboard ─────────────────────────────────────────────────────────
@@ -2683,6 +2885,91 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   #btn-wa-back { display: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border); background: transparent; color: var(--txt2); cursor: pointer; font-size: 1.1rem; flex-shrink: 0; }
   #btn-wa-back:hover { background: rgba(255,255,255,.06); color: var(--txt); }
 
+  /* ── Panel Sin Respuesta ── */
+  #panel-sin-respuesta { display: none; }
+  .sr-toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: .75rem;
+    padding: 1.4rem 0 .9rem;
+  }
+  .sr-toolbar-left { display: flex; align-items: center; gap: .75rem; }
+  .sr-title {
+    font-family: 'Orbitron', sans-serif; font-size: .78rem; font-weight: 700;
+    color: var(--neon); letter-spacing: .12em; text-transform: uppercase;
+  }
+  .sr-count-badge {
+    background: rgba(239,68,68,.18); border: 1px solid rgba(239,68,68,.4);
+    color: #f87171; border-radius: 14px; padding: .18rem .65rem;
+    font-size: .68rem; font-weight: 700; font-family: 'Space Grotesk', sans-serif;
+  }
+  .sr-export-btn {
+    display: flex; align-items: center; gap: .35rem;
+    padding: .42rem 1rem; border-radius: 18px;
+    border: 1px solid rgba(0,212,255,.35); background: rgba(0,212,255,.08);
+    color: var(--neon); font-size: .72rem; font-weight: 600;
+    cursor: pointer; transition: all .2s; white-space: nowrap;
+    font-family: 'Space Grotesk', sans-serif; letter-spacing: .04em;
+    text-decoration: none;
+  }
+  .sr-export-btn:hover { background: rgba(0,212,255,.18); box-shadow: 0 0 12px rgba(0,212,255,.25); }
+
+  .sr-table-wrap {
+    overflow-x: auto; border-radius: 12px;
+    border: 1px solid var(--border);
+    background: rgba(0,0,0,.18);
+    -webkit-overflow-scrolling: touch;
+  }
+  .sr-table {
+    width: 100%; border-collapse: collapse;
+    font-family: 'Space Grotesk', sans-serif;
+  }
+  .sr-table th {
+    padding: .65rem 1rem; text-align: left;
+    font-size: .62rem; font-weight: 700; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--txt3);
+    border-bottom: 1px solid var(--border);
+    background: rgba(0,0,0,.2); white-space: nowrap;
+  }
+  .sr-table td {
+    padding: .72rem 1rem; font-size: .82rem; color: var(--txt);
+    border-bottom: 1px solid rgba(255,255,255,.04); vertical-align: middle;
+  }
+  .sr-table tr:last-child td { border-bottom: none; }
+  .sr-table tr:hover td { background: rgba(0,212,255,.04); }
+  .sr-days {
+    display: inline-flex; align-items: center; gap: .3rem;
+    font-weight: 700; font-family: 'Orbitron', monospace; font-size: .78rem;
+  }
+  .sr-days.urgent { color: #f87171; }
+  .sr-days.warn   { color: #fbbf24; }
+  .sr-days.ok     { color: #4ade80; }
+  .sr-phone { font-family: monospace; font-size: .78rem; color: var(--txt2); }
+  .sr-promo {
+    display: inline-block; background: rgba(168,85,247,.12);
+    border: 1px solid rgba(168,85,247,.3); color: #c084fc;
+    border-radius: 10px; padding: .1rem .5rem; font-size: .7rem; font-weight: 600;
+  }
+  .sr-promo.empty { background: none; border: none; color: var(--txt3); }
+  .sr-actions { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+  .sr-btn {
+    padding: .28rem .7rem; border-radius: 14px; border: none;
+    font-size: .68rem; font-weight: 700; cursor: pointer; white-space: nowrap;
+    font-family: 'Space Grotesk', sans-serif; letter-spacing: .03em;
+    transition: all .18s;
+  }
+  .sr-btn.reactivar    { background: rgba(0,212,255,.14); color: var(--neon); border: 1px solid rgba(0,212,255,.35); }
+  .sr-btn.reactivar:hover { background: rgba(0,212,255,.26); box-shadow: 0 0 10px rgba(0,212,255,.25); }
+  .sr-btn.incontactable { background: rgba(239,68,68,.1); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
+  .sr-btn.incontactable:hover { background: rgba(239,68,68,.22); }
+  .sr-btn.ver-chat     { background: rgba(255,255,255,.06); color: var(--txt2); border: 1px solid rgba(255,255,255,.12); }
+  .sr-btn.ver-chat:hover { background: rgba(255,255,255,.12); color: var(--txt); }
+  .sr-btn:disabled { opacity: .45; cursor: default; }
+  .sr-empty {
+    text-align: center; padding: 3.5rem 1rem;
+    color: var(--txt3); font-size: .88rem;
+  }
+  .sr-loading { text-align: center; padding: 3rem 1rem; color: var(--txt3); }
+
   /* ── Panel campañas ── */
   #panel-campanas { display: none; }
   .cpn-toolbar {
@@ -2824,8 +3111,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </div>
   </div>
   <nav class="tab-nav">
-    <button class="tab-btn active" id="tab-metricas"  onclick="switchTab('metricas')">&#128200; M&eacute;tricas</button>
-    <button class="tab-btn"        id="tab-campanas"  onclick="switchTab('campanas')">&#128226; Campa&ntilde;as</button>
+    <button class="tab-btn active" id="tab-metricas"    onclick="switchTab('metricas')">&#128200; M&eacute;tricas</button>
+    <button class="tab-btn"        id="tab-sin-resp"    onclick="switchTab('sin-respuesta')">&#9200; Sin Respuesta <span id="tab-sr-count" style="display:none;background:rgba(239,68,68,.25);color:#f87171;border-radius:10px;padding:.05rem .42rem;font-size:.6rem;margin-left:.25rem;font-family:'Space Grotesk',sans-serif">0</span></button>
+    <button class="tab-btn"        id="tab-campanas"    onclick="switchTab('campanas')">&#128226; Campa&ntilde;as</button>
   </nav>
   <button class="btn-live" id="btn-live" onclick="toggleLive()">&#128172; Live</button>
   <div class="header-right">
@@ -3034,6 +3322,42 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
 </main>
 </div><!-- /panel-metrics -->
+
+<!-- ── Panel Sin Respuesta ───────────────────────────────────────────────────── -->
+<div id="panel-sin-respuesta">
+<main>
+  <div class="sr-toolbar">
+    <div class="sr-toolbar-left">
+      <span class="sr-title">&#9200; Sin Respuesta</span>
+      <span class="sr-count-badge" id="sr-total-badge">0 leads</span>
+    </div>
+    <a class="sr-export-btn" href="/api/sin-respuesta/export.csv" download>
+      &#8681; Exportar CSV
+    </a>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="sr-table-wrap">
+      <table class="sr-table">
+        <thead>
+          <tr>
+            <th>Nombre</th>
+            <th>Tel&eacute;fono</th>
+            <th>Ciudad</th>
+            <th>Fecha env&iacute;o</th>
+            <th>Sin respuesta</th>
+            <th>Promoci&oacute;n</th>
+            <th>Acci&oacute;n</th>
+          </tr>
+        </thead>
+        <tbody id="sr-tbody">
+          <tr><td colspan="7" class="sr-loading">Cargando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+</div><!-- /panel-sin-respuesta -->
 
 <!-- ── Panel Live Chat — WhatsApp Web ───────────────────────────────────────── -->
 <div id="panel-chat">
@@ -3571,22 +3895,26 @@ async function liberarLead(telefono) {
 function switchTab(tab) {
   // Cerrar Live si está abierto (sin llamar a switchTab de nuevo)
   const pc  = document.getElementById('panel-chat');
-  const btn = document.getElementById('btn-live');
+  const btnLive = document.getElementById('btn-live');
   if (pc && pc.style.display === 'flex') {
     pc.style.display = 'none'; pc.style.flexDirection = '';
-    if (btn) btn.classList.remove('active');
+    if (btnLive) btnLive.classList.remove('active');
   }
 
-  const pm = document.getElementById('panel-metrics');
-  const pk = document.getElementById('panel-campanas');
-  const bm = document.getElementById('tab-metricas');
-  const bk = document.getElementById('tab-campanas');
+  const pm  = document.getElementById('panel-metrics');
+  const pk  = document.getElementById('panel-campanas');
+  const psr = document.getElementById('panel-sin-respuesta');
+  const bm  = document.getElementById('tab-metricas');
+  const bk  = document.getElementById('tab-campanas');
+  const bsr = document.getElementById('tab-sin-resp');
 
   // Ocultar todos
-  pm.style.display = 'none';
-  pk.style.display = 'none';
+  pm.style.display  = 'none';
+  pk.style.display  = 'none';
+  psr.style.display = 'none';
   bm.classList.remove('active');
   bk.classList.remove('active');
+  if (bsr) bsr.classList.remove('active');
 
   if (tab === 'metricas') {
     pm.style.display = '';
@@ -3595,6 +3923,10 @@ function switchTab(tab) {
     pk.style.display = '';
     bk.classList.add('active');
     actualizarCampanasList();
+  } else if (tab === 'sin-respuesta') {
+    psr.style.display = '';
+    if (bsr) bsr.classList.add('active');
+    actualizarSinRespuesta();
   }
 }
 
@@ -3604,11 +3936,15 @@ function _abrirLivePanel() {
   const pc  = document.getElementById('panel-chat');
   const pm  = document.getElementById('panel-metrics');
   const pk  = document.getElementById('panel-campanas');
+  const psr = document.getElementById('panel-sin-respuesta');
   const btn = document.getElementById('btn-live');
   // Guardar qué tab estaba activo
-  _tabAnterior = pk && pk.style.display !== 'none' ? 'campanas' : 'metricas';
-  pm.style.display = 'none';
-  pk.style.display = 'none';
+  _tabAnterior = pk && pk.style.display !== 'none'
+    ? 'campanas'
+    : (psr && psr.style.display !== 'none' ? 'sin-respuesta' : 'metricas');
+  pm.style.display  = 'none';
+  pk.style.display  = 'none';
+  if (psr) psr.style.display = 'none';
   pc.style.display = 'flex';
   pc.style.flexDirection = 'column';
   btn.classList.add('active');
@@ -3656,6 +3992,13 @@ async function actualizarStats() {
     document.getElementById('k-msgs').textContent      = d.mensajes_hoy    ?? '?';
     document.getElementById('k-followups').textContent = d.followups_pendientes ?? '?';
     document.getElementById('last-update').textContent = d.actualizado;
+    // Actualizar contador "Sin Respuesta" en el tab
+    const srCount = d.sin_respuesta_count ?? 0;
+    const srTabBadge = document.getElementById('tab-sr-count');
+    if (srTabBadge) {
+      srTabBadge.textContent = srCount;
+      srTabBadge.style.display = srCount > 0 ? 'inline' : 'none';
+    }
     if (d.por_estado && d.por_estado.length) {
       initChart(d.por_estado.map(e=>e.estado), d.por_estado.map(e=>e.total), d.por_estado.map(e=>e.color));
     }
@@ -5194,6 +5537,120 @@ const CPN_ESTADO_LABEL = {
   cancelada:  'Cancelada',
   error:      'Error',
 };
+
+// =========================================================================
+// SIN RESPUESTA
+// =========================================================================
+let _srData = [];
+
+async function actualizarSinRespuesta() {
+  const tbody = document.getElementById('sr-tbody');
+  const badge = document.getElementById('sr-total-badge');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="7" class="sr-loading">Cargando...</td></tr>';
+  try {
+    const r = await fetch('/api/sin-respuesta');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    _srData = d.leads || [];
+    if (badge) badge.textContent = `${_srData.length} lead${_srData.length !== 1 ? 's' : ''}`;
+    renderSinRespuesta();
+  } catch(err) {
+    tbody.innerHTML = `<tr><td colspan="7" class="sr-empty">Error al cargar (${err.message})</td></tr>`;
+  }
+}
+
+function renderSinRespuesta() {
+  const tbody = document.getElementById('sr-tbody');
+  if (!tbody) return;
+  if (!_srData.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="sr-empty">&#10003; Sin leads pendientes — todos han respondido</td></tr>';
+    return;
+  }
+  tbody.innerHTML = _srData.map((lead, idx) => {
+    const safeTel  = lead.telefono.replace(/['"<>&]/g, '');
+    const nombre   = esc(lead.nombre || lead.telefono);
+    const ciudad   = esc(lead.ciudad || '—');
+    const dias     = parseFloat(lead.dias_sin_respuesta || 0);
+    const diasCls  = dias >= 7 ? 'urgent' : dias >= 3 ? 'warn' : 'ok';
+    const diasTxt  = dias < 1 ? 'Hoy' : dias < 2 ? '1 día' : `${Math.floor(dias)} días`;
+    const fechaEnv = lead.fecha_envio ? fmtTime(lead.fecha_envio) : '—';
+    const promo    = (lead.subproducto || '').trim();
+    return `<tr id="sr-row-${idx}">
+      <td><span style="font-weight:600">${nombre}</span></td>
+      <td><span class="sr-phone">+${safeTel}</span></td>
+      <td>${ciudad}</td>
+      <td style="color:var(--txt2);font-size:.76rem;font-family:monospace">${fechaEnv}</td>
+      <td><span class="sr-days ${diasCls}">&#9200; ${diasTxt}</span></td>
+      <td>${promo ? `<span class="sr-promo">${esc(promo)}</span>` : '<span class="sr-promo empty">—</span>'}</td>
+      <td>
+        <div class="sr-actions">
+          <button class="sr-btn reactivar"     onclick="srReactivar('${safeTel}',${idx})">&#128172; Reactivar</button>
+          <button class="sr-btn incontactable" onclick="srIncontactable('${safeTel}',${idx})">&#10005; Incontactable</button>
+          <button class="sr-btn ver-chat"      onclick="srVerChat('${safeTel}')">&#128172; Ver chat</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function srReactivar(telefono, idx) {
+  const row = document.getElementById('sr-row-' + idx);
+  const btn = row ? row.querySelector('.sr-btn.reactivar') : null;
+  if (btn) { btn.disabled = true; btn.textContent = 'Enviando...'; }
+  try {
+    const r = await fetch('/api/sin-respuesta/' + encodeURIComponent(telefono) + '/reactivar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const d = await r.json();
+    if (d.ok) {
+      if (btn) { btn.textContent = '\u2713 Enviado'; btn.style.background = 'rgba(34,197,94,.15)'; btn.style.color = '#4ade80'; }
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = 'Reactivar'; alert('Error: ' + (d.error || 'sin detalle')); }
+    }
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Reactivar'; }
+  }
+}
+
+async function srIncontactable(telefono, idx) {
+  if (!confirm(`¿Marcar +${telefono} como Incontactable? Se moverá a "seguimiento" y no aparecerá en esta lista.`)) return;
+  const row = document.getElementById('sr-row-' + idx);
+  const btn = row ? row.querySelector('.sr-btn.incontactable') : null;
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  try {
+    const r = await fetch('/api/sin-respuesta/' + encodeURIComponent(telefono) + '/incontactable', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok && row) {
+      row.style.opacity = '0'; row.style.transition = 'opacity .35s';
+      setTimeout(() => {
+        _srData = _srData.filter(l => l.telefono !== telefono);
+        const badge = document.getElementById('sr-total-badge');
+        if (badge) badge.textContent = `${_srData.length} lead${_srData.length !== 1 ? 's' : ''}`;
+        renderSinRespuesta();
+      }, 380);
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = '\u2715 Incontactable'; }
+    }
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '\u2715 Incontactable'; }
+  }
+}
+
+function srVerChat(telefono) {
+  _abrirLivePanel();
+  history.pushState({ view: 'live' }, '');
+  // Esperar a que la lista cargue, luego abrir el contacto
+  const intentar = (intentos) => {
+    const conv = conversaciones.find(c => c.telefono === telefono || c.telefono.replace(/\D/g,'') === telefono.replace(/\D/g,''));
+    if (conv) {
+      seleccionarContacto(conv.telefono);
+    } else if (intentos > 0) {
+      setTimeout(() => intentar(intentos - 1), 400);
+    }
+  };
+  setTimeout(() => intentar(5), 350);
+}
 
 let _cpnPolling = null;
 

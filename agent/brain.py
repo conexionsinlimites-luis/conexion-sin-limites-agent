@@ -2,14 +2,15 @@
 # Generado por AgentKit
 
 """
-Lógica de IA del agente. Lee el system prompt de prompts.yaml
-y genera respuestas usando la API de Anthropic Claude.
+Lógica de IA del agente. Construye el system prompt dinámicamente
+via prompt_builder y genera respuestas usando la API de Anthropic Claude.
 """
 
 import yaml
 import logging
 from anthropic import AsyncAnthropic
 from agent.config import ANTHROPIC_API_KEY
+from agent.prompt_builder import construir_prompt
 
 logger = logging.getLogger("agentkit")
 
@@ -17,32 +18,27 @@ logger = logging.getLogger("agentkit")
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def cargar_config_prompts() -> dict:
-    """Lee toda la configuración desde config/prompts.yaml."""
+def _cargar_yaml() -> dict:
+    """Lee config/prompts.yaml para los mensajes de error/fallback."""
     try:
         with open("config/prompts.yaml", "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except FileNotFoundError:
-        logger.error("config/prompts.yaml no encontrado")
         return {}
 
 
-def cargar_system_prompt() -> str:
-    """Lee el system prompt desde config/prompts.yaml."""
-    config = cargar_config_prompts()
-    return config.get("system_prompt", "Eres un asistente útil. Responde en español.")
-
-
 def obtener_mensaje_error() -> str:
-    """Retorna el mensaje de error configurado en prompts.yaml."""
-    config = cargar_config_prompts()
-    return config.get("error_message", "Lo siento, estoy teniendo problemas técnicos. Por favor intenta de nuevo en unos minutos.")
+    return _cargar_yaml().get(
+        "error_message",
+        "Lo siento, estoy teniendo problemas técnicos. Por favor intenta de nuevo en unos minutos.",
+    )
 
 
 def obtener_mensaje_fallback() -> str:
-    """Retorna el mensaje de fallback configurado en prompts.yaml."""
-    config = cargar_config_prompts()
-    return config.get("fallback_message", "Disculpa, no entendí tu mensaje. ¿Podrías reformularlo?")
+    return _cargar_yaml().get(
+        "fallback_message",
+        "Disculpa, no entendí tu mensaje. ¿Podrías reformularlo?",
+    )
 
 
 async def generar_respuesta(
@@ -50,15 +46,22 @@ async def generar_respuesta(
     historial: list[dict],
     nombre_cliente: str = None,
     nombre_recien_capturado: bool = False,
+    telefono: str = "",
+    cliente_slug: str = "csl",
+    lead: dict | None = None,
 ) -> str:
     """
     Genera una respuesta usando Claude API.
 
     Args:
-        mensaje: El mensaje nuevo del usuario
-        historial: Lista de mensajes anteriores [{"role": "user/assistant", "content": "..."}]
-        nombre_cliente: Nombre del cliente si ya fue capturado (None = aún desconocido)
-        nombre_recien_capturado: True si el nombre se detectó por primera vez en ESTE mensaje
+        mensaje:               El mensaje nuevo del usuario
+        historial:             Lista de mensajes anteriores [{"role": ..., "content": ...}]
+        nombre_cliente:        Nombre capturado del cliente (None = desconocido)
+        nombre_recien_capturado: True si el nombre se detectó en ESTE mensaje
+        telefono:              Teléfono del cliente — usado por prompt_builder para
+                               consultar el lead si no se pasa `lead`
+        cliente_slug:          Slug del cliente en tabla `clientes` (default: "csl")
+        lead:                  Dict con datos del lead ya cargados (evita consulta extra)
 
     Returns:
         La respuesta generada por Claude
@@ -67,7 +70,12 @@ async def generar_respuesta(
     if not mensaje or len(mensaje.strip()) < 2:
         return obtener_mensaje_fallback()
 
-    system_prompt = cargar_system_prompt()
+    # Construir prompt dinámico: base + catálogo + objeciones + cierres + estado lead
+    system_prompt = await construir_prompt(
+        telefono=telefono,
+        cliente_slug=cliente_slug,
+        lead=lead,
+    )
 
     # Inyectar contexto del nombre para que Valentina lo use o lo pida
     INVALIDOS = {"", "desconocido", "none", "null", "cliente", "unknown"}

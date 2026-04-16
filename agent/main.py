@@ -31,6 +31,9 @@ from agent.campanas import inicializar_campanas
 # Número del supervisor comercial que recibe alertas (mismo que TELEFONO_OWNER)
 TELEFONO_SUPERVISOR = TELEFONO_OWNER
 
+# Slug del cliente activo — usado por prompt_builder para cargar config_json
+CLIENTE_SLUG = "csl"
+
 # Configuración de logging según entorno
 log_level = logging.DEBUG if ENVIRONMENT == "development" else logging.INFO
 logging.basicConfig(level=log_level)
@@ -238,7 +241,15 @@ async def webhook_handler(request: Request):
             _log("INFO", f"Historial recuperado: {len(historial)} mensajes previos")
 
             nombre_cliente = (lead_ref.get("nombre") or "") if lead_ref else ""
-            respuesta = await generar_respuesta(msg.texto, historial, nombre_cliente, nombre_recien_capturado)
+            respuesta = await generar_respuesta(
+                msg.texto,
+                historial,
+                nombre_cliente,
+                nombre_recien_capturado,
+                telefono=msg.telefono,
+                cliente_slug=CLIENTE_SLUG,
+                lead=lead_ref,
+            )
             _log("INFO", f"Respuesta generada: '{respuesta[:100]}'")
 
             # Detectar marcador de alerta al supervisor y procesarlo antes de enviar al cliente

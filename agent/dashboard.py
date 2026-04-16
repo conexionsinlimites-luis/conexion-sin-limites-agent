@@ -4943,7 +4943,7 @@ function renderConvList() {
       : `<button class="wa-quick-tomar"   title="Tomar lead" onclick="event.stopPropagation();quickTomar('${safeTel}',this)">&#128100;</button>`;
 
     // Preview: prefijo según quién habló último
-    const previewPfx = c.ultimo_rol==='assistant' ? '\u{1F916} ' : '\u{1F464} ';
+    const previewPfx = c.ultimo_rol==='assistant' ? '🤖 ' : '👤 ';
     const preview = previewPfx + esc((c.ultimo_mensaje||'').slice(0,48));
 
     const TC=['#00D4FF','#c084fc','#f59e0b','#22c55e','#ef4444','#3b82f6','#f97316','#10b981'];

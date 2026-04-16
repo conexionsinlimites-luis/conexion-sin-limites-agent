@@ -1552,43 +1552,59 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   /* ── header ── */
   header {
     position: sticky; top: 0; z-index: 100;
-    background: rgba(0,0,0,0.85);
-    backdrop-filter: blur(20px);
+    background: rgba(0,0,0,0.88);
+    backdrop-filter: blur(24px);
     border-bottom: 1px solid var(--border);
-    box-shadow: 0 1px 40px rgba(0,212,255,0.08);
+    box-shadow: 0 2px 48px rgba(0,212,255,0.10), 0 1px 0 rgba(0,212,255,0.08);
     padding: 0 2.5rem;
-    height: 70px;
-    display: flex; align-items: center; justify-content: space-between;
+    min-height: 80px;
+    display: flex; align-items: center; gap: 1.5rem;
+    justify-content: space-between;
   }
 
-  .logo { display: flex; align-items: center; gap: 1rem; }
+  /* ── Logo + marca ── */
+  .logo { display: flex; align-items: center; gap: 1.1rem; flex-shrink: 0; }
 
   .logo-icon {
-    width: 38px; height: 38px;
-    border: 1.5px solid var(--neon);
-    border-radius: 8px;
+    width: 46px; height: 46px;
+    border: 2px solid var(--neon);
+    border-radius: 12px;
     display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 0 12px var(--neon-glow), inset 0 0 12px rgba(0,212,255,0.05);
+    background: linear-gradient(135deg, rgba(0,212,255,.12) 0%, rgba(0,212,255,.04) 100%);
+    box-shadow: 0 0 18px var(--neon-glow), inset 0 0 14px rgba(0,212,255,0.07);
     font-family: 'Orbitron', sans-serif;
-    font-size: 1.1rem; font-weight: 900;
+    font-size: 1.25rem; font-weight: 900;
     color: var(--neon);
-    text-shadow: 0 0 8px var(--neon);
+    text-shadow: 0 0 12px var(--neon);
     flex-shrink: 0;
+    position: relative;
+  }
+  /* Pulso suave detrás del ícono */
+  .logo-icon::before {
+    content: '';
+    position: absolute; inset: -4px; border-radius: 16px;
+    border: 1px solid rgba(0,212,255,.2);
+    animation: logoPulse 3s ease-in-out infinite;
+  }
+  @keyframes logoPulse {
+    0%, 100% { opacity: .5; transform: scale(1);   }
+    50%       { opacity: 1;  transform: scale(1.06);}
   }
 
-  .logo-text-wrap { display: flex; flex-direction: column; }
+  .logo-text-wrap { display: flex; flex-direction: column; gap: 2px; }
 
   .logo-name {
     font-family: 'Orbitron', sans-serif;
-    font-size: .95rem; font-weight: 700;
-    letter-spacing: .15em; line-height: 1;
+    font-size: 1.08rem; font-weight: 800;
+    letter-spacing: .13em; line-height: 1;
     color: var(--txt);
-    text-shadow: 0 0 20px rgba(255,255,255,0.3);
+    text-shadow: 0 0 24px rgba(255,255,255,0.25);
+    white-space: nowrap;
   }
 
   .logo-x {
     color: var(--red);
-    text-shadow: 0 0 10px var(--red), 0 0 20px var(--red-glow);
+    text-shadow: 0 0 10px var(--red), 0 0 22px var(--red-glow);
     position: relative;
     display: inline-block;
   }
@@ -1602,14 +1618,46 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     font-family: Arial, sans-serif;
   }
 
-  .logo-sub {
-    font-size: .65rem; font-weight: 500;
-    color: var(--neon); letter-spacing: .2em;
-    text-transform: uppercase; margin-top: 3px;
-    opacity: .8;
+  .logo-slogan {
+    font-size: .68rem; font-weight: 500;
+    font-family: 'Space Grotesk', sans-serif;
+    color: rgba(0,212,255,.75);
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    font-style: italic;
   }
 
-  .header-right { display: flex; align-items: center; gap: 1.5rem; }
+  /* ── Indicador de sistema ── */
+  .sys-status {
+    display: flex; align-items: center; gap: .45rem;
+    padding: .32rem .85rem;
+    border-radius: 20px;
+    border: 1px solid rgba(0,255,136,.3);
+    background: rgba(0,255,136,.05);
+    font-size: .68rem; font-weight: 600;
+    color: var(--green); letter-spacing: .05em;
+    font-family: 'Space Grotesk', sans-serif;
+    white-space: nowrap; flex-shrink: 0;
+    transition: border-color .4s, color .4s, background .4s;
+  }
+  .sys-status.error {
+    border-color: rgba(239,68,68,.35);
+    background: rgba(239,68,68,.06);
+    color: #f87171;
+  }
+  .sys-status.error .sys-dot { background: #f87171; box-shadow: 0 0 6px #f87171; animation: none; }
+  .sys-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 7px var(--green);
+    animation: blink 1.8s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  .header-right {
+    display: flex; align-items: center; gap: 1.25rem;
+    flex-shrink: 0;
+  }
 
   .live-badge {
     display: flex; align-items: center; gap: .45rem;
@@ -1628,7 +1676,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   }
 
   #last-update {
-    font-size: .7rem; color: var(--txt2);
+    font-size: .68rem; color: var(--txt3);
     font-family: 'Space Grotesk', sans-serif;
     letter-spacing: .04em;
   }
@@ -2300,23 +2348,32 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   /* ── MOBILE RESPONSIVE ────────────────────────────────────── */
   @media(max-width:768px) {
     header {
-      padding: 0 max(.85rem, env(safe-area-inset-left));
-      padding-top: max(.45rem, env(safe-area-inset-top));
-      padding-bottom: .45rem;
-      padding-right: max(.85rem, env(safe-area-inset-right));
+      padding: max(.6rem, env(safe-area-inset-top)) max(.85rem, env(safe-area-inset-right))
+               .6rem max(.85rem, env(safe-area-inset-left));
+      min-height: auto;
       height: auto;
-      min-height: 52px;
-      flex-wrap: nowrap;   /* fuerza fila única — evita que el header crezca */
-      gap: .5rem;
-      overflow: hidden;
+      /* 2 filas: logo arriba, nav + live abajo */
+      flex-direction: column;
+      align-items: flex-start;
+      gap: .55rem;
+      justify-content: flex-start;
     }
-    .logo-icon { width: 28px; height: 28px; font-size: .82rem; border-radius: 6px; flex-shrink: 0; }
-    .logo-name { font-size: .68rem; letter-spacing: .06em; }
-    .logo-sub  { font-size: .5rem; letter-spacing: .1em; }
-    /* Ocultar live badge y timestamp en móvil — sobran espacio y causan wrap */
+    /* Fila 1: logo a la izquierda, sistema a la derecha */
+    .logo {
+      width: 100%; justify-content: space-between; align-items: center;
+    }
+    .logo-icon { width: 34px; height: 34px; font-size: .92rem; border-radius: 8px; }
+    .logo-name { font-size: .82rem; letter-spacing: .08em; }
+    .logo-slogan { font-size: .58rem; letter-spacing: .12em; }
+    /* Sys-status: en móvil se muestra dentro del logo row */
+    #sys-status-desktop { display: none !important; }
+    #sys-status-mobile  { display: flex !important; margin-left: auto; }
+    .sys-status { padding: .25rem .6rem; font-size: .6rem; }
+    /* Ocultar live badge y timestamp en móvil */
     .header-right { display: none; }
+    /* Fila 2: tabs + live ocupan todo el ancho */
     .tab-nav { flex-shrink: 0; }
-    .tab-btn { padding: .28rem .75rem; font-size: .68rem; }
+    .tab-btn { padding: .28rem .6rem; font-size: .64rem; }
     .btn-live { padding: .28rem .75rem; font-size: .68rem; flex-shrink: 0; }
 
     main {
@@ -3101,22 +3158,38 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 <body>
 
 <header style="position:relative">
+  <!-- Fila 1 (en móvil): marca + sistema -->
   <div class="logo">
-    <div class="logo-icon">V</div>
+    <!-- Ícono con inicial -->
+    <div class="logo-icon">C</div>
+    <!-- Nombre + slogan -->
     <div class="logo-text-wrap">
       <div class="logo-name">
         CONE<span class="logo-x">X</span>I&Oacute;N SIN L&Iacute;MITES
       </div>
-      <div class="logo-sub">Valentina &nbsp;·&nbsp; CRM Intelligence</div>
+      <div class="logo-slogan">Tu se&ntilde;al. Tu mundo.</div>
+    </div>
+    <!-- Indicador de sistema — visible solo en móvil dentro del logo row -->
+    <div class="sys-status" id="sys-status-mobile" style="display:none">
+      <div class="sys-dot"></div>
+      <span>Activo</span>
     </div>
   </div>
+
+  <!-- Fila 2 (en móvil): nav + live -->
   <nav class="tab-nav">
     <button class="tab-btn active" id="tab-metricas"    onclick="switchTab('metricas')">&#128200; M&eacute;tricas</button>
     <button class="tab-btn"        id="tab-sin-resp"    onclick="switchTab('sin-respuesta')">&#9200; Sin Respuesta <span id="tab-sr-count" style="display:none;background:rgba(239,68,68,.25);color:#f87171;border-radius:10px;padding:.05rem .42rem;font-size:.6rem;margin-left:.25rem;font-family:'Space Grotesk',sans-serif">0</span></button>
     <button class="tab-btn"        id="tab-campanas"    onclick="switchTab('campanas')">&#128226; Campa&ntilde;as</button>
   </nav>
   <button class="btn-live" id="btn-live" onclick="toggleLive()">&#128172; Live</button>
+
+  <!-- Desktop derecha: sistema + EN VIVO + timestamp + salir -->
   <div class="header-right">
+    <div class="sys-status" id="sys-status-desktop">
+      <div class="sys-dot"></div>
+      <span>Sistema activo</span>
+    </div>
     <div class="live-badge"><div class="live-dot"></div>EN VIVO</div>
     <div id="last-update">Iniciando...</div>
     <a href="/logout" style="color:var(--txt2);font-size:.65rem;font-weight:600;letter-spacing:.06em;text-decoration:none;text-transform:uppercase;padding:.3rem .7rem;border:1px solid var(--border);border-radius:14px;transition:color .2s" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--txt2)'">&#x2715; Salir</a>
@@ -3992,6 +4065,8 @@ async function actualizarStats() {
     document.getElementById('k-msgs').textContent      = d.mensajes_hoy    ?? '?';
     document.getElementById('k-followups').textContent = d.followups_pendientes ?? '?';
     document.getElementById('last-update').textContent = d.actualizado;
+    // Indicadores de estado del sistema
+    _setSysStatus(true);
     // Actualizar contador "Sin Respuesta" en el tab
     const srCount = d.sin_respuesta_count ?? 0;
     const srTabBadge = document.getElementById('tab-sr-count');
@@ -4006,8 +4081,29 @@ async function actualizarStats() {
   } catch(e) {
     console.error('actualizarStats excepción:', e);
     document.getElementById('last-update').textContent = 'ERR JS';
+    _setSysStatus(false);
   }
 }
+
+function _setSysStatus(ok) {
+  const isMobile = window.matchMedia('(max-width:768px)').matches;
+  const desk  = document.getElementById('sys-status-desktop');
+  const mob   = document.getElementById('sys-status-mobile');
+  // Mostrar el correcto según viewport
+  if (desk) desk.style.display = '';   // header-right ya lo oculta en mobile via CSS
+  if (mob)  mob.style.display  = isMobile ? 'flex' : 'none';
+  [desk, mob].forEach(el => {
+    if (!el) return;
+    if (ok) {
+      el.classList.remove('error');
+      el.querySelector('span').textContent = el === mob ? 'Activo' : 'Sistema activo';
+    } else {
+      el.classList.add('error');
+      el.querySelector('span').textContent = 'Sin conexión';
+    }
+  });
+}
+
 function renderEmbudo(conv) {
   if (!conv) return;
   [conv.contactado_interesado, conv.interesado_caliente, conv.caliente_cierre].forEach((e,i) => {

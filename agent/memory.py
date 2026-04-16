@@ -11,7 +11,7 @@ from agent.database import get_pool
 
 
 async def inicializar_db():
-    """Crea la tabla mensajes si no existe."""
+    """Crea la tabla mensajes si no existe y aplica migraciones."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
@@ -26,6 +26,16 @@ async def inicializar_db():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mensajes_telefono ON mensajes (telefono)"
         )
+        # Multi-tenant: cliente_id (referencia a tabla clientes creada por crm.init_db)
+        await conn.execute(
+            "ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS "
+            "cliente_id INTEGER REFERENCES clientes(id)"
+        )
+        await conn.execute("""
+            UPDATE mensajes
+            SET cliente_id = (SELECT id FROM clientes WHERE slug = 'csl')
+            WHERE cliente_id IS NULL
+        """)
 
 
 async def guardar_mensaje(telefono: str, role: str, content: str):

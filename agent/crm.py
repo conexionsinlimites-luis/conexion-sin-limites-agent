@@ -77,6 +77,31 @@ async def init_db():
     """Crea las tablas del CRM si no existen y aplica migraciones."""
     pool = await get_pool()
     async with pool.acquire() as conn:
+
+        # ── Multi-tenant: tabla clientes ──────────────────────────
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS clientes (
+                id                     SERIAL PRIMARY KEY,
+                nombre                 TEXT NOT NULL,
+                slug                   TEXT UNIQUE NOT NULL,
+                whatsapp_phone_id      TEXT,
+                whatsapp_token         TEXT,
+                dashboard_user         TEXT,
+                dashboard_password_hash TEXT,
+                config_json            TEXT DEFAULT '{}',
+                activo                 BOOLEAN DEFAULT TRUE,
+                creado_en              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Primer cliente: Conexión Sin Límites (slug "csl")
+        await conn.execute("""
+            INSERT INTO clientes (nombre, slug, activo)
+            VALUES ('Conexión Sin Límites', 'csl', TRUE)
+            ON CONFLICT (slug) DO NOTHING
+        """)
+
+        # ── Tablas principales ────────────────────────────────────
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS leads (
                 id SERIAL PRIMARY KEY,
@@ -134,7 +159,8 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Migración incremental: agregar columnas si no existen
+
+        # ── Migraciones incrementales de columnas ─────────────────
         await conn.execute(
             "ALTER TABLE leads ADD COLUMN IF NOT EXISTS lead_resumen TEXT DEFAULT ''"
         )
@@ -144,6 +170,47 @@ async def init_db():
         await conn.execute(
             "ALTER TABLE leads ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''"
         )
+
+        # Multi-tenant: cliente_id en todas las tablas operativas
+        await conn.execute(
+            "ALTER TABLE leads ADD COLUMN IF NOT EXISTS "
+            "cliente_id INTEGER REFERENCES clientes(id)"
+        )
+        await conn.execute(
+            "ALTER TABLE historial_mensajes ADD COLUMN IF NOT EXISTS "
+            "cliente_id INTEGER REFERENCES clientes(id)"
+        )
+        await conn.execute(
+            "ALTER TABLE followup_programado ADD COLUMN IF NOT EXISTS "
+            "cliente_id INTEGER REFERENCES clientes(id)"
+        )
+        await conn.execute(
+            "ALTER TABLE alertas ADD COLUMN IF NOT EXISTS "
+            "cliente_id INTEGER REFERENCES clientes(id)"
+        )
+
+        # Asignar registros existentes al cliente "csl" (id=1)
+        await conn.execute("""
+            UPDATE leads
+            SET cliente_id = (SELECT id FROM clientes WHERE slug = 'csl')
+            WHERE cliente_id IS NULL
+        """)
+        await conn.execute("""
+            UPDATE historial_mensajes
+            SET cliente_id = (SELECT id FROM clientes WHERE slug = 'csl')
+            WHERE cliente_id IS NULL
+        """)
+        await conn.execute("""
+            UPDATE followup_programado
+            SET cliente_id = (SELECT id FROM clientes WHERE slug = 'csl')
+            WHERE cliente_id IS NULL
+        """)
+        await conn.execute("""
+            UPDATE alertas
+            SET cliente_id = (SELECT id FROM clientes WHERE slug = 'csl')
+            WHERE cliente_id IS NULL
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS lead_notas (
                 id SERIAL PRIMARY KEY,

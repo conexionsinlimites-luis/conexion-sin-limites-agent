@@ -59,8 +59,8 @@ async def lifespan(app: FastAPI):
     """Inicializa el pool PostgreSQL, tablas y el scheduler de follow-ups."""
     await get_pool()
     _log("INFO", "Pool PostgreSQL inicializado")
+    await crm.init_db()       # crea clientes primero (mensajes la referencia)
     await inicializar_db()
-    await crm.init_db()
     await inicializar_campanas()
     _log("INFO", "Tablas PostgreSQL verificadas")
     _log("INFO", f"Servidor AgentKit en puerto {PORT}")

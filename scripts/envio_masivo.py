@@ -5,11 +5,14 @@
 Lee un archivo Excel con columnas 'cliente', 'tel_limpio' y 'prioridad',
 y envía la plantilla 'bienvenida_conexion' a cada número via Meta Cloud API.
 
+Antes de enviar, consulta la tabla `leads` en PostgreSQL y descarta los
+teléfonos que ya existen — solo se envía a contactos nuevos.
+
 Uso:
     python scripts/envio_masivo.py archivo.xlsx [--prioridad N] [--limite N]
 
     --prioridad  Filtra solo filas con ese valor en columna 'prioridad' (default: 1)
-    --limite     Máximo de contactos a enviar (default: 100)
+    --limite     Máximo de contactos NUEVOS a enviar (default: 100)
 
 El Excel debe tener estas columnas (primera fila = encabezados):
     cliente           | tel_limpio    | prioridad
@@ -30,8 +33,10 @@ IMPORTANTE:
 import os
 import sys
 import time
+import asyncio
 import argparse
 import httpx
+import asyncpg
 import openpyxl
 from datetime import datetime
 from dotenv import load_dotenv
@@ -69,9 +74,34 @@ def primer_nombre_apellido(nombre_completo: str) -> str:
         return f"{partes[0]} {partes[2]}"
 
 
-def leer_excel(ruta: str, prioridad: int = 1, limite: int = 100) -> list[dict]:
+async def obtener_telefonos_en_bd() -> set[str]:
     """
-    Lee el Excel y retorna lista de {nombre, telefono} filtrando por prioridad y limite.
+    Consulta la tabla `leads` en PostgreSQL y retorna un set con todos los
+    teléfonos que ya existen. Usa DATABASE_URL del .env.
+    """
+    database_url = os.getenv("DATABASE_URL", "")
+    if not database_url:
+        print("ADVERTENCIA: DATABASE_URL no configurado — no se puede filtrar duplicados.")
+        return set()
+
+    # asyncpg necesita 'postgresql://' (sin +asyncpg)
+    url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    try:
+        conn = await asyncpg.connect(url)
+        rows = await conn.fetch("SELECT telefono FROM leads")
+        await conn.close()
+        telefonos = {str(r["telefono"]).strip() for r in rows}
+        return telefonos
+    except Exception as e:
+        print(f"ADVERTENCIA: No se pudo conectar a la BD para verificar duplicados: {e}")
+        return set()
+
+
+def leer_excel(ruta: str, prioridad: int = 1) -> list[dict]:
+    """
+    Lee el Excel y retorna TODOS los contactos con la prioridad indicada.
+    El límite se aplica en main() DESPUÉS de filtrar duplicados de la BD.
 
     Columnas requeridas: 'cliente', 'tel_limpio', 'prioridad'
     """
@@ -114,9 +144,6 @@ def leer_excel(ruta: str, prioridad: int = 1, limite: int = 100) -> list[dict]:
 
         if nombre and telefono:
             contactos.append({"nombre": nombre, "telefono": telefono})
-
-        if len(contactos) >= limite:
-            break
 
     print(f"Filas omitidas (prioridad != {prioridad}): {omitidos}")
     return contactos
@@ -197,10 +224,26 @@ def main():
         print("ERROR: META_ACCESS_TOKEN o META_PHONE_NUMBER_ID no están configurados en .env")
         sys.exit(1)
 
-    # Leer contactos filtrados por prioridad y limitados
-    contactos = leer_excel(ruta_excel, prioridad=args.prioridad, limite=args.limite)
+    # Leer contactos del Excel filtrados por prioridad (sin límite aún)
+    todos = leer_excel(ruta_excel, prioridad=args.prioridad)
+    print(f"\nContactos en Excel (prioridad={args.prioridad}): {len(todos)}")
+
+    # Consultar BD y filtrar los que ya existen como leads
+    print("Consultando base de datos para excluir teléfonos ya registrados...")
+    telefonos_bd = asyncio.run(obtener_telefonos_en_bd())
+    print(f"Teléfonos ya en BD: {len(telefonos_bd)}")
+
+    ya_existentes = [c for c in todos if c["telefono"] in telefonos_bd]
+    nuevos        = [c for c in todos if c["telefono"] not in telefonos_bd]
+
+    print(f"Saltados (ya en leads): {len(ya_existentes)}")
+    print(f"Nuevos a enviar: {len(nuevos)}")
+
+    # Aplicar límite sobre los nuevos únicamente
+    contactos = nuevos[:args.limite]
     total = len(contactos)
-    print(f"\nContactos cargados: {total} (prioridad={args.prioridad}, limite={args.limite})")
+
+    print(f"\nContactos a enviar (limite={args.limite}): {total}")
     print(f"Plantilla: {TEMPLATE_NAME} | Idioma: {TEMPLATE_LANG}")
     print(f"Phone Number ID: {PHONE_NUMBER_ID} (+56941762315)")
     print("-" * 50)
@@ -246,6 +289,18 @@ def main():
             if i < total:
                 time.sleep(PAUSA_SEGUNDOS)
 
+    # Agregar los saltados al log para tener registro completo
+    ts_fin = datetime.now().strftime("%H:%M:%S")
+    for c in ya_existentes:
+        resultados.append({
+            "nombre": c["nombre"],
+            "telefono": c["telefono"],
+            "nombre_plantilla": primer_nombre_apellido(c["nombre"]),
+            "estado": "saltado",
+            "detalle": "ya existe en leads",
+            "timestamp": ts_fin,
+        })
+
     # Guardar log
     archivo_log = guardar_log(resultados, ruta_excel)
 
@@ -254,6 +309,7 @@ def main():
     print(f"  Envio completado")
     print(f"  Exitosos : {exitosos}")
     print(f"  Fallidos : {fallidos}")
+    print(f"  Saltados : {len(ya_existentes)}  (ya en leads)")
     print(f"  Log      : {archivo_log}")
     print("=" * 50)
 

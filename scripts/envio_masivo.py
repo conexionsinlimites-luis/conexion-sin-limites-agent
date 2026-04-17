@@ -41,7 +41,12 @@ import openpyxl
 from datetime import datetime
 from dotenv import load_dotenv
 
-load_dotenv()
+# Apuntar siempre al .env en la raíz del proyecto, sin importar
+# desde qué directorio se ejecute el script.
+# override=True garantiza que .env sobreescribe cualquier variable
+# de entorno del sistema (evita usar un DATABASE_URL local residual).
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=True)
 
 # ── Configuración ──────────────────────────────────────────
 ACCESS_TOKEN    = "".join((os.getenv("META_ACCESS_TOKEN") or "").split())
@@ -77,7 +82,8 @@ def primer_nombre_apellido(nombre_completo: str) -> str:
 async def obtener_telefonos_en_bd() -> set[str]:
     """
     Consulta la tabla `leads` en PostgreSQL y retorna un set con todos los
-    teléfonos que ya existen. Usa DATABASE_URL del .env.
+    teléfonos que ya existen. Lee DATABASE_URL del .env del proyecto
+    (override=True garantiza que prevalece sobre variables del sistema).
     """
     database_url = os.getenv("DATABASE_URL", "")
     if not database_url:
@@ -86,6 +92,14 @@ async def obtener_telefonos_en_bd() -> set[str]:
 
     # asyncpg necesita 'postgresql://' (sin +asyncpg)
     url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    # Mostrar el host al que nos conectamos (sin credenciales) para verificación
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or "desconocido"
+    except Exception:
+        host = "desconocido"
+    print(f"Conectando a BD: {host}")
 
     try:
         conn = await asyncpg.connect(url)

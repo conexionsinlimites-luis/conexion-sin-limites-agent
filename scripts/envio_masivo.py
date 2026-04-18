@@ -6,25 +6,29 @@ Lee un archivo Excel con columnas 'cliente', 'tel_limpio' y 'prioridad',
 y envía la plantilla 'bienvenida_conexion' a cada número via Meta Cloud API.
 
 Antes de enviar consulta la tabla `envios_realizados` en PostgreSQL y descarta
-los números a los que ya se envió esta plantilla. Después de cada sesión
-registra los envíos exitosos en esa tabla para que la próxima sesión los omita.
+los números a los que ya se envió esta plantilla. Después de cada sesión:
+  1. Registra los envíos en envios_realizados (deduplicación futura).
+  2. Hace upsert en la tabla leads con nombre, teléfono, ciudad, región,
+     estado='contactado' y prioridad, para que aparezcan en el CRM.
 
 Uso:
-    python scripts/envio_masivo.py archivo.xlsx [--prioridad N] [--limite N] [--db-url URL]
+    python scripts/envio_masivo.py archivo.xlsx [opciones]
 
     --prioridad  Filtra solo filas con ese valor en columna 'prioridad' (default: 1)
+    --desde      Número de orden (1-based) desde donde empezar (default: 1)
     --limite     Máximo de contactos NUEVOS a enviar (default: 100)
     --db-url     URL PostgreSQL de produccion (sobreescribe PROD_DATABASE_URL del .env)
 
 El Excel debe tener estas columnas (primera fila = encabezados):
-    cliente           | tel_limpio    | prioridad
-    Juan Pérez        | 56912345678   | 1
-    María García      | 56987654321   | 2
+    cliente     | tel_limpio    | prioridad | ciudad (opt) | region (opt)
+    Juan Pérez  | 56912345678   | 1         | Santiago     | Metropolitana
 
 IMPORTANTE:
 - tel_limpio debe incluir código de país SIN el signo +  (ej: 56978016298)
 - La plantilla 'bienvenida_conexion' debe estar aprobada en Meta
 - El parámetro {{1}} usa el primer nombre + primer apellido del contacto
+- ciudad  -> columna 'ciudad'  del Excel (opcional) -> campo comuna en leads
+- region  -> columna 'region'  del Excel (opcional) -> campo notas en leads
 """
 
 import os
@@ -157,6 +161,77 @@ async def registrar_envios(db_url: str, resultados: list[dict], plantilla: str):
     print(f"Registrados en BD: {len(registros)} envíos (exitosos + fallidos).")
 
 
+# ── Registro en tabla leads ────────────────────────────────────
+
+CLIENTE_ID_DEFAULT = 1   # ID de Conexión Sin Límites en tabla clientes
+
+async def registrar_leads(db_url: str, resultados: list[dict]):
+    """
+    Hace upsert en la tabla leads para cada envío exitoso.
+
+    - Si el teléfono NO existe: inserta con estado='contactado'.
+    - Si ya existe: actualiza nombre/ciudad/región solo si estaban vacíos
+      y NO toca el estado (no se baja un lead CALIENTE a CONTACTADO).
+
+    Campos mapeados:
+      nombre    -> leads.nombre
+      telefono  -> leads.telefono
+      ciudad    -> leads.comuna
+      region    -> leads.notas  (prefijo "Región: ")
+      prioridad -> leads.tags   (ej: ["prioridad_1"])
+    """
+    exitosos = [r for r in resultados if r.get("estado") == "enviado"]
+    if not exitosos:
+        return
+
+    conn = await asyncpg.connect(db_url)
+    insertados  = 0
+    actualizados = 0
+
+    for r in exitosos:
+        notas = f"Región: {r['region']}" if r.get("region") else ""
+        tag   = f"prioridad_{r.get('prioridad', 1)}"
+
+        result = await conn.fetchrow(
+            """
+            INSERT INTO leads (
+                telefono, nombre, comuna, notas,
+                estado, origen, agente, tags,
+                cliente_id, ultima_interaccion, created_at
+            )
+            VALUES ($1, $2, $3, $4,
+                    'contactado', 'envio_masivo', 'valentina',
+                    $5::text, $6,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (telefono) DO UPDATE SET
+                nombre     = CASE WHEN leads.nombre IS NULL OR leads.nombre = ''
+                                  THEN EXCLUDED.nombre    ELSE leads.nombre    END,
+                comuna     = CASE WHEN leads.comuna IS NULL OR leads.comuna = ''
+                                  THEN EXCLUDED.comuna    ELSE leads.comuna    END,
+                notas      = CASE WHEN leads.notas  IS NULL OR leads.notas  = ''
+                                  THEN EXCLUDED.notas     ELSE leads.notas     END,
+                tags       = CASE WHEN leads.tags = '[]' OR leads.tags IS NULL
+                                  THEN EXCLUDED.tags      ELSE leads.tags      END,
+                ultima_interaccion = CURRENT_TIMESTAMP
+            RETURNING (xmax = 0) AS inserted
+            """,
+            r["telefono"],
+            r["nombre"],
+            r.get("ciudad") or "",
+            notas,
+            f'["{tag}"]',
+            CLIENTE_ID_DEFAULT,
+        )
+
+        if result and result["inserted"]:
+            insertados += 1
+        else:
+            actualizados += 1
+
+    await conn.close()
+    print(f"Leads en BD  : {insertados} insertados, {actualizados} actualizados.")
+
+
 # ── Lectura del Excel ──────────────────────────────────────────
 
 def primer_nombre_apellido(nombre_completo: str) -> str:
@@ -215,6 +290,9 @@ def leer_excel(ruta: str, prioridad: int = 1, desde: int = 1) -> list[dict]:
     col_nombre    = encabezados["cliente"]
     col_telefono  = encabezados["tel_limpio"]
     col_prioridad = encabezados["prioridad"]
+    # Columnas opcionales
+    col_ciudad    = encabezados.get("ciudad")
+    col_region    = encabezados.get("region")
 
     contactos = []
     omitidos  = 0
@@ -223,7 +301,8 @@ def leer_excel(ruta: str, prioridad: int = 1, desde: int = 1) -> list[dict]:
         prio_valor = fila[col_prioridad - 1]
 
         try:
-            if int(prio_valor) != prioridad:
+            prio_int = int(prio_valor)
+            if prio_int != prioridad:
                 omitidos += 1
                 continue
         except (TypeError, ValueError):
@@ -233,8 +312,17 @@ def leer_excel(ruta: str, prioridad: int = 1, desde: int = 1) -> list[dict]:
         # Normalizar teléfono (maneja floats de Excel como 56912345678.0)
         telefono = normalizar_telefono(fila[col_telefono - 1])
 
+        ciudad = str(fila[col_ciudad - 1] or "").strip() if col_ciudad else ""
+        region = str(fila[col_region - 1] or "").strip() if col_region else ""
+
         if nombre and telefono:
-            contactos.append({"nombre": nombre, "telefono": telefono})
+            contactos.append({
+                "nombre":    nombre,
+                "telefono":  telefono,
+                "ciudad":    ciudad,
+                "region":    region,
+                "prioridad": prio_int,
+            })
 
     print(f"Filas omitidas (prioridad != {prioridad}): {omitidos}")
 
@@ -393,6 +481,9 @@ BD de produccion (prioridad):
                 "nombre":           nombre,
                 "telefono":         telefono,
                 "nombre_plantilla": nombre_plantilla,
+                "ciudad":           contacto.get("ciudad", ""),
+                "region":           contacto.get("region", ""),
+                "prioridad":        contacto.get("prioridad", 1),
                 "estado":           estado,
                 "detalle":          detalle,
                 "timestamp":        ts,
@@ -412,6 +503,7 @@ BD de produccion (prioridad):
     # ── 7. Registrar en BD ─────────────────────────────────────
     if db_url:
         asyncio.run(registrar_envios(db_url, resultados, TEMPLATE_NAME))
+        asyncio.run(registrar_leads(db_url, resultados))
 
     # ── 8. Agregar saltados al log y guardar ───────────────────
     ts_fin = datetime.now().strftime("%H:%M:%S")

@@ -117,6 +117,7 @@ async def obtener_telefonos_ya_enviados(db_url: str, plantilla: str) -> set[str]
     """
     Devuelve el set de teléfonos a los que ya se envió esta plantilla
     (exitoso = TRUE). Los fallidos no se incluyen — pueden reintentarse.
+    Normaliza los valores de la BD para que el match sea consistente.
     """
     conn = await asyncpg.connect(db_url)
     rows = await conn.fetch(
@@ -124,7 +125,9 @@ async def obtener_telefonos_ya_enviados(db_url: str, plantilla: str) -> set[str]
         plantilla,
     )
     await conn.close()
-    return {r["telefono"] for r in rows}
+    # Normalizar por las dudas (quitar +, espacios, guiones residuales en BD)
+    return {r["telefono"].replace("+", "").replace(" ", "").replace("-", "").strip()
+            for r in rows}
 
 
 async def registrar_envios(db_url: str, resultados: list[dict], plantilla: str):
@@ -173,10 +176,27 @@ def primer_nombre_apellido(nombre_completo: str) -> str:
         return f"{partes[0]} {partes[2]}"
 
 
-def leer_excel(ruta: str, prioridad: int = 1) -> list[dict]:
+def normalizar_telefono(raw) -> str:
+    """
+    Convierte cualquier valor de celda a string de teléfono limpio.
+    Maneja números flotantes de Excel (ej: 56912345678.0 -> '56912345678').
+    """
+    if raw is None:
+        return ""
+    # Excel puede guardar números como float (56912345678.0)
+    if isinstance(raw, float):
+        raw = str(int(raw))
+    else:
+        raw = str(raw)
+    return raw.replace("+", "").replace(" ", "").replace("-", "").strip()
+
+
+def leer_excel(ruta: str, prioridad: int = 1, desde: int = 1) -> list[dict]:
     """
     Lee todos los contactos con la prioridad indicada.
-    El límite se aplica en main() DESPUÉS de filtrar los ya enviados.
+    'desde' es el número de orden (1-based) dentro de los contactos
+    que pasan el filtro de prioridad. desde=1 = todos, desde=201 = saltar primeros 200.
+    El límite se aplica en main() DESPUES de filtrar los ya enviados.
     """
     wb = openpyxl.load_workbook(ruta)
     ws = wb.active
@@ -200,7 +220,6 @@ def leer_excel(ruta: str, prioridad: int = 1) -> list[dict]:
     omitidos  = 0
     for fila in ws.iter_rows(min_row=2, values_only=True):
         nombre     = str(fila[col_nombre - 1]    or "").strip()
-        telefono   = str(fila[col_telefono - 1]  or "").strip()
         prio_valor = fila[col_prioridad - 1]
 
         try:
@@ -211,13 +230,20 @@ def leer_excel(ruta: str, prioridad: int = 1) -> list[dict]:
             omitidos += 1
             continue
 
-        # Normalizar: quitar +, espacios y guiones
-        telefono = telefono.replace("+", "").replace(" ", "").replace("-", "")
+        # Normalizar teléfono (maneja floats de Excel como 56912345678.0)
+        telefono = normalizar_telefono(fila[col_telefono - 1])
 
         if nombre and telefono:
             contactos.append({"nombre": nombre, "telefono": telefono})
 
     print(f"Filas omitidas (prioridad != {prioridad}): {omitidos}")
+
+    # Aplicar --desde: saltar los primeros (desde-1) contactos
+    if desde > 1:
+        saltados_desde = desde - 1
+        contactos = contactos[saltados_desde:]
+        print(f"Contactos saltados por --desde {desde}       : {saltados_desde}")
+
     return contactos
 
 
@@ -285,6 +311,9 @@ BD de produccion (prioridad):
     parser.add_argument("archivo",       help="Ruta al archivo Excel")
     parser.add_argument("--prioridad",   type=int, default=1,
                         help="Prioridad a filtrar (default: 1)")
+    parser.add_argument("--desde",       type=int, default=1,
+                        help="Fila de inicio dentro de los contactos con esa prioridad "
+                             "(1-based, default: 1 = todos). Ej: --desde 201 salta los primeros 200.")
     parser.add_argument("--limite",      type=int, default=100,
                         help="Maximo de contactos NUEVOS a enviar (default: 100)")
     parser.add_argument("--db-url",      default="",
@@ -309,8 +338,8 @@ BD de produccion (prioridad):
         asyncio.run(preparar_tabla(db_url))
 
     # ── 3. Leer Excel ──────────────────────────────────────────
-    todos = leer_excel(args.archivo, prioridad=args.prioridad)
-    print(f"\nContactos en Excel (prioridad={args.prioridad}): {len(todos)}")
+    todos = leer_excel(args.archivo, prioridad=args.prioridad, desde=args.desde)
+    print(f"\nContactos en Excel (prioridad={args.prioridad}, desde={args.desde}): {len(todos)}")
 
     # ── 4. Filtrar ya enviados ─────────────────────────────────
     if db_url:

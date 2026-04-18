@@ -79,36 +79,60 @@ def primer_nombre_apellido(nombre_completo: str) -> str:
         return f"{partes[0]} {partes[2]}"
 
 
-async def obtener_telefonos_en_bd() -> set[str]:
+def _resolver_db_url(db_url_arg: str = "") -> str:
+    """
+    Resuelve la URL de base de datos con esta prioridad:
+      1. --db-url  (argumento CLI)
+      2. PROD_DATABASE_URL  (variable en .env — para la BD de producción Railway)
+      3. DATABASE_URL  (variable en .env — fallback)
+
+    Retorna la URL lista para asyncpg (sin prefijo +asyncpg).
+    """
+    from urllib.parse import urlparse
+
+    raw = (
+        db_url_arg.strip()
+        or os.getenv("PROD_DATABASE_URL", "").strip()
+        or os.getenv("DATABASE_URL", "").strip()
+    )
+    if not raw:
+        return ""
+
+    url = raw.replace("postgresql+asyncpg://", "postgresql://")
+
+    try:
+        parsed = urlparse(url)
+        fuente = (
+            "argumento --db-url" if db_url_arg.strip()
+            else "PROD_DATABASE_URL" if os.getenv("PROD_DATABASE_URL", "").strip()
+            else "DATABASE_URL"
+        )
+        print(f"BD a consultar : {parsed.hostname}  (fuente: {fuente})")
+    except Exception:
+        print(f"BD a consultar : {url[:40]}...")
+
+    return url
+
+
+async def obtener_telefonos_en_bd(db_url: str) -> set[str]:
     """
     Consulta la tabla `leads` en PostgreSQL y retorna un set con todos los
-    teléfonos que ya existen. Lee DATABASE_URL del .env del proyecto
-    (override=True garantiza que prevalece sobre variables del sistema).
+    teléfonos que ya existen.
+
+    Args:
+        db_url: URL de conexión resuelta por _resolver_db_url().
     """
-    database_url = os.getenv("DATABASE_URL", "")
-    if not database_url:
-        print("ADVERTENCIA: DATABASE_URL no configurado — no se puede filtrar duplicados.")
+    if not db_url:
+        print("ADVERTENCIA: No hay DATABASE_URL configurada — se omite el filtro de duplicados.")
         return set()
 
-    # asyncpg necesita 'postgresql://' (sin +asyncpg)
-    url = database_url.replace("postgresql+asyncpg://", "postgresql://")
-
-    # Mostrar el host al que nos conectamos (sin credenciales) para verificación
     try:
-        from urllib.parse import urlparse
-        host = urlparse(url).hostname or "desconocido"
-    except Exception:
-        host = "desconocido"
-    print(f"Conectando a BD: {host}")
-
-    try:
-        conn = await asyncpg.connect(url)
+        conn = await asyncpg.connect(db_url)
         rows = await conn.fetch("SELECT telefono FROM leads")
         await conn.close()
-        telefonos = {str(r["telefono"]).strip() for r in rows}
-        return telefonos
+        return {str(r["telefono"]).strip() for r in rows}
     except Exception as e:
-        print(f"ADVERTENCIA: No se pudo conectar a la BD para verificar duplicados: {e}")
+        print(f"ADVERTENCIA: No se pudo conectar a la BD: {e}")
         return set()
 
 
@@ -221,12 +245,27 @@ def guardar_log(resultados: list[dict], ruta_excel: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Envío masivo de plantilla WhatsApp")
+    parser = argparse.ArgumentParser(
+        description="Envío masivo de plantilla WhatsApp",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Base de datos (prioridad):
+  1. --db-url          URL pasada directamente en el comando
+  2. PROD_DATABASE_URL Variable en .env (BD de produccion Railway)
+  3. DATABASE_URL      Variable en .env (fallback)
+
+Para usar la BD de produccion Railway sin --db-url, agrega al .env:
+  PROD_DATABASE_URL=postgresql://usuario:pass@host/db?sslmode=require
+  (copiala desde Railway -> tu proyecto -> Variables -> DATABASE_URL)
+        """,
+    )
     parser.add_argument("archivo", help="Ruta al archivo Excel")
     parser.add_argument("--prioridad", type=int, default=1,
                         help="Valor de prioridad a filtrar (default: 1)")
     parser.add_argument("--limite", type=int, default=100,
-                        help="Máximo de contactos a enviar (default: 100)")
+                        help="Máximo de contactos NUEVOS a enviar (default: 100)")
+    parser.add_argument("--db-url", default="",
+                        help="URL de PostgreSQL de producción (sobreescribe DATABASE_URL del .env)")
     args = parser.parse_args()
 
     ruta_excel = args.archivo
@@ -242,9 +281,10 @@ def main():
     todos = leer_excel(ruta_excel, prioridad=args.prioridad)
     print(f"\nContactos en Excel (prioridad={args.prioridad}): {len(todos)}")
 
-    # Consultar BD y filtrar los que ya existen como leads
+    # Resolver URL de BD y consultar leads existentes
+    db_url = _resolver_db_url(args.db_url)
     print("Consultando base de datos para excluir teléfonos ya registrados...")
-    telefonos_bd = asyncio.run(obtener_telefonos_en_bd())
+    telefonos_bd = asyncio.run(obtener_telefonos_en_bd(db_url))
     print(f"Teléfonos ya en BD: {len(telefonos_bd)}")
 
     ya_existentes = [c for c in todos if c["telefono"] in telefonos_bd]

@@ -233,24 +233,36 @@ async def api_stats():
             },
         }
 
-    # Contador "Sin Respuesta" (último mensaje es del agente, lead no ha respondido)
+    # Contador "Sin Respuesta":
+    # Caso A — historial existe y el último mensaje fue del agente
+    # Caso B — estado='contactado' sin ningún mensaje en historial (envio_masivo)
     try:
         sin_respuesta_count = await conn.fetchval("""
-            SELECT COUNT(DISTINCT SPLIT_PART(REPLACE(hm.telefono,' ',''),'@',1))
-            FROM (
-                SELECT DISTINCT ON (SPLIT_PART(REPLACE(telefono,' ',''),'@',1))
-                    SPLIT_PART(REPLACE(telefono,' ',''),'@',1) AS tel,
-                    rol
-                FROM historial_mensajes
-                ORDER BY SPLIT_PART(REPLACE(telefono,' ',''),'@',1), timestamp DESC
-            ) last_msg
-            JOIN historial_mensajes hm
-              ON SPLIT_PART(REPLACE(hm.telefono,' ',''),'@',1) = last_msg.tel
-            LEFT JOIN leads l
-              ON SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1) = last_msg.tel
-            WHERE last_msg.rol = 'assistant'
-              AND (l.estado IS NULL OR l.estado NOT IN ('cerrado','modo_humano'))
-              AND (l.tags IS NULL OR l.tags NOT LIKE '%Incontactable%')
+            SELECT
+              (SELECT COUNT(DISTINCT SPLIT_PART(REPLACE(tel,' ',''),'@',1))
+               FROM (
+                   SELECT DISTINCT ON (SPLIT_PART(REPLACE(telefono,' ',''),'@',1))
+                       SPLIT_PART(REPLACE(telefono,' ',''),'@',1) AS tel,
+                       rol
+                   FROM historial_mensajes
+                   ORDER BY SPLIT_PART(REPLACE(telefono,' ',''),'@',1), timestamp DESC
+               ) last_msg
+               LEFT JOIN leads l
+                 ON SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1) = last_msg.tel
+               WHERE last_msg.rol = 'assistant'
+                 AND (l.estado IS NULL OR l.estado NOT IN ('cerrado','modo_humano'))
+                 AND (l.tags IS NULL OR l.tags NOT LIKE '%Incontactable%')
+              )
+              +
+              (SELECT COUNT(*) FROM leads l
+               WHERE l.estado = 'contactado'
+                 AND (l.tags IS NULL OR l.tags NOT LIKE '%Incontactable%')
+                 AND NOT EXISTS (
+                     SELECT 1 FROM historial_mensajes hm
+                     WHERE SPLIT_PART(REPLACE(hm.telefono,' ',''),'@',1)
+                         = SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1)
+                 )
+              )
         """) or 0
     except Exception:
         sin_respuesta_count = 0
@@ -1318,7 +1330,9 @@ async def kpi_followups():
 # ── API: Sin Respuesta ────────────────────────────────────────────────────────
 
 _SIN_RESPUESTA_QUERY = """
-    WITH ultimos AS (
+    WITH
+    -- Caso A: pasaron por el webhook, el último mensaje fue del agente (nunca respondieron)
+    ultimos AS (
         SELECT DISTINCT ON (SPLIT_PART(REPLACE(telefono,' ',''),'@',1))
             SPLIT_PART(REPLACE(telefono,' ',''),'@',1) AS telefono,
             rol           AS ultimo_rol,
@@ -1333,27 +1347,55 @@ _SIN_RESPUESTA_QUERY = """
         FROM historial_mensajes
         WHERE rol = 'assistant'
         ORDER BY SPLIT_PART(REPLACE(telefono,' ',''),'@',1), timestamp ASC
+    ),
+    caso_a AS (
+        SELECT
+            u.telefono,
+            COALESCE(l.nombre,  u.telefono)  AS nombre,
+            COALESCE(l.comuna,  '')           AS ciudad,
+            COALESCE(l.estado,  'nuevo')      AS estado,
+            COALESCE(l.subproducto, '')       AS subproducto,
+            COALESCE(l.tags,    '[]')         AS tags,
+            p.primer_contacto                 AS fecha_envio,
+            u.ultima_actividad,
+            ROUND(
+                EXTRACT(EPOCH FROM (NOW() - u.ultima_actividad)) / 86400.0, 1
+            )::float                          AS dias_sin_respuesta
+        FROM ultimos u
+        JOIN primeros p ON u.telefono = p.telefono
+        LEFT JOIN leads l
+          ON SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1) = u.telefono
+        WHERE u.ultimo_rol = 'assistant'
+          AND (l.estado IS NULL OR l.estado NOT IN ('cerrado','modo_humano'))
+          AND (l.tags IS NULL OR l.tags NOT LIKE '%Incontactable%')
+    ),
+    -- Caso B: estado='contactado' sin ningún mensaje en historial (envio_masivo)
+    caso_b AS (
+        SELECT
+            SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1) AS telefono,
+            COALESCE(l.nombre, l.telefono)               AS nombre,
+            COALESCE(l.comuna, '')                        AS ciudad,
+            l.estado,
+            COALESCE(l.subproducto, '')                   AS subproducto,
+            COALESCE(l.tags, '[]')                        AS tags,
+            l.ultima_interaccion                          AS fecha_envio,
+            l.ultima_interaccion                          AS ultima_actividad,
+            ROUND(
+                EXTRACT(EPOCH FROM (NOW() - l.ultima_interaccion)) / 86400.0, 1
+            )::float                                      AS dias_sin_respuesta
+        FROM leads l
+        WHERE l.estado = 'contactado'
+          AND (l.tags IS NULL OR l.tags NOT LIKE '%Incontactable%')
+          AND NOT EXISTS (
+              SELECT 1 FROM historial_mensajes hm
+              WHERE SPLIT_PART(REPLACE(hm.telefono,' ',''),'@',1)
+                  = SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1)
+          )
     )
-    SELECT
-        u.telefono,
-        COALESCE(l.nombre,  u.telefono)  AS nombre,
-        COALESCE(l.comuna,  '')          AS ciudad,
-        COALESCE(l.estado,  'nuevo')     AS estado,
-        COALESCE(l.subproducto, '')      AS subproducto,
-        COALESCE(l.tags,    '[]')        AS tags,
-        p.primer_contacto                AS fecha_envio,
-        u.ultima_actividad,
-        ROUND(
-            EXTRACT(EPOCH FROM (NOW() - u.ultima_actividad)) / 86400.0, 1
-        )::float                         AS dias_sin_respuesta
-    FROM ultimos u
-    JOIN primeros p ON u.telefono = p.telefono
-    LEFT JOIN leads l
-      ON SPLIT_PART(REPLACE(l.telefono,' ',''),'@',1) = u.telefono
-    WHERE u.ultimo_rol = 'assistant'
-      AND (l.estado IS NULL OR l.estado NOT IN ('cerrado','modo_humano'))
-      AND (l.tags IS NULL OR l.tags NOT LIKE '%Incontactable%')
-    ORDER BY u.ultima_actividad ASC
+    SELECT * FROM caso_a
+    UNION ALL
+    SELECT * FROM caso_b
+    ORDER BY ultima_actividad ASC
     LIMIT 500
 """
 

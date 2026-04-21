@@ -4098,7 +4098,7 @@ function switchTab(tab) {
     pm.style.display = '';
     bm.classList.add('active');
   } else if (tab === 'campanas') {
-    pk.style.display = '';
+    pk.style.display = 'block';
     bk.classList.add('active');
     actualizarCampanasList();
   } else if (tab === 'sin-respuesta') {

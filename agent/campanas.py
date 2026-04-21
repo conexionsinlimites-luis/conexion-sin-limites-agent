@@ -340,3 +340,58 @@ async def enviar_campana_bg(campana_id: int, proveedor):
                 )
         except Exception:
             pass
+
+
+async def pausar_campana(campana_id: int) -> dict:
+    """Pausa una campaña en envío."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT estado FROM campanas WHERE id=$1", campana_id)
+        if not row:
+            return {"ok": False, "error": "Campaña no encontrada"}
+        if row["estado"] != "enviando":
+            return {"ok": False, "error": f"Solo se puede pausar si está enviando (estado actual: {row['estado']})"}
+        await conn.execute("UPDATE campanas SET estado='pausada' WHERE id=$1", campana_id)
+    return {"ok": True, "estado": "pausada"}
+
+async def reanudar_campana(campana_id: int) -> dict:
+    """Reanuda una campaña pausada."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, nombre, mensaje, filtros FROM campanas WHERE id=$1 AND estado='pausada'",
+            campana_id
+        )
+        if not row:
+            return {"ok": False, "error": "Campaña no encontrada o no está pausada"}
+        await conn.execute("UPDATE campanas SET estado='enviando' WHERE id=$1", campana_id)
+    # Relanzar envío desde donde quedó
+    import asyncio
+    asyncio.create_task(ejecutar_envio_campana(campana_id))
+    return {"ok": True, "estado": "enviando"}
+
+async def progreso_campana(campana_id: int) -> dict:
+    """Retorna progreso actual de una campaña."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT c.estado, c.total_enviados, c.total_fallidos,
+                   COUNT(d.id) as total
+            FROM campanas c
+            LEFT JOIN campana_destinatarios d ON d.campana_id = c.id
+            WHERE c.id = $1
+            GROUP BY c.estado, c.total_enviados, c.total_fallidos
+        """, campana_id)
+        if not row:
+            return {"ok": False}
+        enviados = row["total_enviados"] or 0
+        fallidos = row["total_fallidos"] or 0
+        total = row["total"] or 0
+        return {
+            "ok": True,
+            "estado": row["estado"],
+            "enviados": enviados,
+            "fallidos": fallidos,
+            "total": total,
+            "porcentaje": round((enviados + fallidos) / total * 100) if total > 0 else 0
+        }

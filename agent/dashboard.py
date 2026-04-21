@@ -451,6 +451,62 @@ async def api_obtener_campana(campana_id: int):
     return JSONResponse(campana)
 
 
+
+@router.post("/api/campanas/{campana_id}/pausar")
+async def api_pausar_campana(campana_id: int):
+    resultado = await _campanas.pausar_campana(campana_id)
+    return JSONResponse(resultado)
+
+@router.post("/api/campanas/{campana_id}/reanudar")
+async def api_reanudar_campana(campana_id: int):
+    resultado = await _campanas.reanudar_campana(campana_id)
+    return JSONResponse(resultado)
+
+@router.get("/api/campanas/{campana_id}/progreso")
+async def api_progreso_campana(campana_id: int):
+    resultado = await _campanas.progreso_campana(campana_id)
+    return JSONResponse(resultado)
+
+@router.post("/api/campanas/subir-excel")
+async def api_subir_excel(request: Request):
+    """Sube un Excel/CSV y crea leads en la DB."""
+    import io, csv
+    try:
+        form = await request.form()
+        archivo = form.get("archivo")
+        if not archivo:
+            return JSONResponse({"ok": False, "error": "No se recibió archivo"}, status_code=400)
+        contenido = await archivo.read()
+        texto = contenido.decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(texto))
+        pool = await get_pool()
+        insertados = 0
+        duplicados = 0
+        errores = 0
+        async with pool.acquire() as conn:
+            for row in reader:
+                try:
+                    tel = str(row.get("telefono") or row.get("Telefono") or row.get("TELEFONO") or "").strip().replace(" ","").replace("+","")
+                    if not tel or len(tel) < 8:
+                        errores += 1
+                        continue
+                    nombre = str(row.get("nombre") or row.get("Nombre") or row.get("NOMBRE") or "").strip()
+                    comuna = str(row.get("comuna") or row.get("Comuna") or row.get("COMUNA") or "").strip()
+                    existing = await conn.fetchval("SELECT id FROM leads WHERE REPLACE(telefono,' ','') = $1", tel)
+                    if existing:
+                        duplicados += 1
+                        continue
+                    await conn.execute("""
+                        INSERT INTO leads (telefono, nombre, comuna, estado, cliente_id, producto_principal)
+                        VALUES ($1, $2, $3, 'nuevo', 1, 'telecom')
+                    """, tel, nombre, comuna)
+                    insertados += 1
+                except Exception:
+                    errores += 1
+        return JSONResponse({"ok": True, "insertados": insertados, "duplicados": duplicados, "errores": errores})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
 @router.get("/api/campanas/{campana_id}/destinatarios")
 async def api_destinatarios(campana_id: int):
     """Lista de destinatarios de una campaña con estado de envío."""
@@ -3585,7 +3641,16 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     <div class="cpn-toolbar-title">&#128226; Campa&ntilde;as de WhatsApp</div>
     <button class="cpn-new-btn" onclick="abrirNuevaCampana()">+ Nueva Campa&ntilde;a</button>
   </div>
-  <div class="card">
+  
+<div class="card" style="margin-bottom:1rem">
+  <div class="card-title">📤 Subir nueva base de datos (CSV)</div>
+  <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding:.5rem 0">
+    <input type="file" id="excel-input" accept=".csv,.xlsx" style="color:var(--txt);background:#111;border:1px solid #333;border-radius:8px;padding:.4rem .6rem;font-size:.78rem;flex:1;min-width:200px">
+    <button id="btn-subir-excel" onclick="subirExcel()" style="padding:.5rem 1.25rem;background:#00D4FF;color:#000;border:none;border-radius:8px;font-weight:700;cursor:pointer;white-space:nowrap">📤 Subir CSV</button>
+  </div>
+  <div style="font-size:.7rem;color:#666;margin-top:.25rem">Formato: columnas telefono, nombre, comuna (separadas por coma)</div>
+</div>
+<div class="card">
     <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
       <span>Historial de campa&ntilde;as</span>
       <span id="cpn-count" style="font-size:.62rem;color:var(--txt3);font-weight:400"></span>
@@ -5879,6 +5944,12 @@ async function actualizarCampanasList() {
     const enviarBtn = c.estado === 'borrador'
       ? `<button class="cpn-action-btn enviar" onclick="event.stopPropagation();confirmarEnvio(${c.id},'${esc(c.nombre)}',${total})">&#9658; Enviar</button>`
       : '';
+    const pausarBtn = c.estado === 'enviando'
+      ? `<button class="cpn-action-btn" style="background:rgba(251,191,36,.15);border-color:rgba(251,191,36,.4);color:#fbbf24" onclick="event.stopPropagation();pausarCampana(${c.id})">&#9646;&#9646; Pausar</button>`
+      : '';
+    const reanudarBtn = c.estado === 'pausada'
+      ? `<button class="cpn-action-btn enviar" onclick="event.stopPropagation();reanudarCampana(${c.id})">&#9654; Reanudar</button>`
+      : '';
     const progHtml = c.estado === 'completada' || c.estado === 'enviando'
       ? `<div class="cpn-progress"><div class="cpn-progress-fill" style="width:${pct}%;background:${color}"></div></div>`
       : '';
@@ -5900,7 +5971,8 @@ async function actualizarCampanasList() {
       </div>
       <div style="display:flex;flex-direction:column;gap:.3rem;align-items:flex-end">
         <span class="cpn-estado-badge" style="background:${color}22;color:${color};border:1px solid ${color}44">${label}</span>
-        ${enviarBtn}
+        ${enviarBtn}${pausarBtn}${reanudarBtn}
+        <div id="progreso-${c.id}"></div>
       </div>
     </div>`;
   }).join('');
@@ -5919,6 +5991,7 @@ async function confirmarEnvio(id, nombre, total) {
   const r = await fetch(`/api/campanas/${id}/enviar`, { method: 'POST' });
   if (r.ok) {
     await actualizarCampanasList();
+    iniciarPollingProgreso(id);
   } else {
     const d = await r.json().catch(() => ({}));
     alert('Error al enviar: ' + (d.detail || 'desconocido'));
@@ -6287,6 +6360,73 @@ _HTML_LOGIN = """<!DOCTYPE html>
   if (location.search.includes('error=1')) {
     document.getElementById('err').classList.add('show');
   }
+
+async function pausarCampana(id) {
+  if (!confirm('¿Pausar esta campaña?')) return;
+  const r = await fetch(`/api/campanas/${id}/pausar`, {method:'POST'});
+  const d = await r.json();
+  if (d.ok) { actualizarCampanasList(); } else { alert('Error: ' + d.error); }
+}
+
+async function reanudarCampana(id) {
+  if (!confirm('¿Reanudar esta campaña?')) return;
+  const r = await fetch(`/api/campanas/${id}/reanudar`, {method:'POST'});
+  const d = await r.json();
+  if (d.ok) { actualizarCampanasList(); iniciarPollingProgreso(id); }
+  else { alert('Error: ' + d.error); }
+}
+
+let _progresoInterval = null;
+function iniciarPollingProgreso(id) {
+  if (_progresoInterval) clearInterval(_progresoInterval);
+  _progresoInterval = setInterval(async () => {
+    const r = await fetch(`/api/campanas/${id}/progreso`);
+    const d = await r.json();
+    if (!d.ok) return;
+    const el = document.getElementById(`progreso-${id}`);
+    if (el) {
+      el.innerHTML = `
+        <div style="margin:.5rem 0">
+          <div style="background:#222;border-radius:8px;height:8px;overflow:hidden">
+            <div style="background:#00D4FF;height:100%;width:${d.porcentaje}%;transition:width .5s"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:.7rem;color:#888;margin-top:.3rem">
+            <span>✅ ${d.enviados} enviados · ❌ ${d.fallidos} fallidos</span>
+            <span>${d.porcentaje}% · ${d.total} total</span>
+          </div>
+        </div>`;
+    }
+    if (d.estado === 'completada' || d.estado === 'cancelada' || d.estado === 'error') {
+      clearInterval(_progresoInterval);
+      actualizarCampanasList();
+    }
+  }, 3000);
+}
+
+async function subirExcel() {
+  const input = document.getElementById('excel-input');
+  const archivo = input.files[0];
+  if (!archivo) { alert('Selecciona un archivo CSV'); return; }
+  const btn = document.getElementById('btn-subir-excel');
+  btn.disabled = true; btn.textContent = 'Subiendo...';
+  const form = new FormData();
+  form.append('archivo', archivo);
+  try {
+    const r = await fetch('/api/campanas/subir-excel', {method:'POST', body: form});
+    const d = await r.json();
+    if (d.ok) {
+      alert(`✅ Cargados: ${d.insertados} nuevos · ${d.duplicados} duplicados · ${d.errores} errores`);
+      input.value = '';
+      actualizarCampanasList();
+    } else {
+      alert('Error: ' + d.error);
+    }
+  } catch(e) {
+    alert('Error al subir: ' + e.message);
+  }
+  btn.disabled = false; btn.textContent = '📤 Subir CSV';
+}
+
 </script>
 </body>
 </html>"""

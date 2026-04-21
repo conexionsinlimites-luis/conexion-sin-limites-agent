@@ -3775,78 +3775,88 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
 <!-- Modal: Nueva Campaña -->
 <div class="modal-overlay" id="modal-nueva-campana" onclick="if(event.target===this)cerrarNuevaCampana()">
-  <div class="modal-box" style="max-width:600px">
-    <div class="modal-header">
+  <div class="modal-box" style="max-width:640px;max-height:90vh;overflow-y:auto;display:flex;flex-direction:column">
+    <div class="modal-header" style="position:sticky;top:0;background:#111;z-index:10;border-bottom:1px solid #222;padding:1rem 1.5rem">
       <div>
-        <div style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">NUEVA CAMPA&Ntilde;A</div>
-        <div style="font-size:.65rem;color:var(--txt3);margin-top:.25rem">Crea y segmenta tu mensaje masivo de WhatsApp</div>
+        <div style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">📣 NUEVA CAMPAÑA</div>
+        <div style="font-size:.65rem;color:#666;margin-top:.25rem">Crea y segmenta tu mensaje masivo de WhatsApp</div>
       </div>
-      <button class="modal-close" onclick="cerrarNuevaCampana()">&#10005;&nbsp; Cerrar</button>
+      <button class="modal-close" onclick="cerrarNuevaCampana()">✕ Cerrar</button>
     </div>
-    <div style="padding:1.4rem 1.75rem;display:flex;flex-direction:column;gap:.85rem;overflow-y:auto;max-height:80vh">
+    <div style="padding:1.25rem 1.5rem;display:flex;flex-direction:column;gap:1rem">
 
-      <div class="ncpn-section">
-        <div class="ncpn-label">Nombre de la campa&ntilde;a *</div>
-        <input id="ncpn-nombre" class="ncpn-input" type="text" maxlength="120" placeholder="Ej: Promo diciembre — leads tibios">
+      <!-- Nombre -->
+      <div>
+        <div class="ncpn-label">NOMBRE DE LA CAMPAÑA *</div>
+        <input id="ncpn-nombre" class="ncpn-input" type="text" maxlength="80" placeholder="Ej: Campaña Mayo DirecTV">
       </div>
 
-      <div class="ncpn-section">
-        <div class="ncpn-label">Mensaje *</div>
-        <textarea id="ncpn-mensaje" class="ncpn-textarea" placeholder="Hola {{nombre}}, te escribo de Conexión Sin Límites..."></textarea>
-        <div class="ncpn-hint">Usa <strong>{{nombre}}</strong> para personalizar con el nombre de cada cliente.</div>
+      <!-- Template Meta -->
+      <div>
+        <div class="ncpn-label">TEMPLATE DE WHATSAPP *</div>
+        <select id="ncpn-template" class="ncpn-input" style="cursor:pointer">
+          <option value="bienvenida_conexion">✅ bienvenida_conexion (aprobado)</option>
+        </select>
+        <div style="font-size:.68rem;color:#555;margin-top:.3rem">⚠️ Solo usar templates aprobados por Meta para evitar bloqueos</div>
       </div>
 
-      <div class="ncpn-section">
-        <div class="ncpn-label">Segmentaci&oacute;n de destinatarios <span style="font-weight:400;text-transform:none;letter-spacing:0">(opcional — sin filtros = todos los leads)</span></div>
-        <div class="ncpn-filtros-grid">
+      <!-- Segmentación -->
+      <div style="background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.12);border-radius:10px;padding:1rem">
+        <div style="font-family:'Orbitron',sans-serif;font-size:.65rem;color:var(--neon);letter-spacing:.1em;margin-bottom:.75rem">🎯 SEGMENTACIÓN (opcional)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
           <div>
-            <div class="ncpn-label" style="margin-top:.3rem">Tag</div>
-            <input id="ncpn-tag" class="ncpn-input" type="text" maxlength="50" placeholder="Ej: DirecTV">
+            <div class="ncpn-label">Tag</div>
+            <input id="ncpn-tag" class="ncpn-input" type="text" placeholder="Ej: DirecTV">
           </div>
           <div>
-            <div class="ncpn-label" style="margin-top:.3rem">Estado del lead</div>
-            <select id="ncpn-estado" class="ncpn-select">
+            <div class="ncpn-label">Estado del lead</div>
+            <select id="ncpn-estado" class="ncpn-input" style="cursor:pointer">
               <option value="">Todos los estados</option>
               <option value="nuevo">Nuevo</option>
               <option value="contactado">Contactado</option>
               <option value="interesado">Interesado</option>
               <option value="tibio">Tibio</option>
               <option value="caliente">Caliente</option>
-              <option value="cerrado">Cerrado</option>
               <option value="seguimiento">Seguimiento</option>
             </select>
           </div>
           <div>
-            <div class="ncpn-label" style="margin-top:.3rem">Score m&iacute;nimo</div>
+            <div class="ncpn-label">Score mínimo</div>
             <input id="ncpn-score" class="ncpn-input" type="number" min="0" max="100" placeholder="Ej: 30">
           </div>
           <div>
-            <div class="ncpn-label" style="margin-top:.3rem">Comuna</div>
-            <input id="ncpn-comuna" class="ncpn-input" type="text" maxlength="80" placeholder="Ej: Santiago">
-          </div>
-          <div>
-            <div class="ncpn-label" style="margin-top:.3rem">Desde (primer contacto)</div>
-            <input id="ncpn-desde" class="ncpn-input" type="date">
-          </div>
-          <div>
-            <div class="ncpn-label" style="margin-top:.3rem">Hasta</div>
-            <input id="ncpn-hasta" class="ncpn-input" type="date">
+            <div class="ncpn-label">Comuna</div>
+            <input id="ncpn-comuna" class="ncpn-input" type="text" placeholder="Ej: Santiago">
           </div>
         </div>
-        <button id="ncpn-preview-btn" onclick="previewDestinatarios()" style="margin-top:.75rem;background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.72rem;font-weight:700;padding:.4rem 1rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(255,255,255,.1)'" onmouseout="this.style.background='rgba(255,255,255,.05)'">&#128065; Ver destinatarios</button>
-      </div>
-
-      <div class="ncpn-section">
-        <div class="ncpn-label">Vista previa</div>
-        <div class="ncpn-preview-box" id="ncpn-preview-box">
-          <div class="ncpn-preview-sub">Haz clic en "Ver destinatarios" para previsualizar</div>
+        <!-- Fechas -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-top:.75rem">
+          <div>
+            <div class="ncpn-label">📅 Desde (primer contacto)</div>
+            <input id="ncpn-desde" class="ncpn-input" type="date" style="color-scheme:dark">
+          </div>
+          <div>
+            <div class="ncpn-label">📅 Hasta</div>
+            <input id="ncpn-hasta" class="ncpn-input" type="date" style="color-scheme:dark">
+          </div>
         </div>
       </div>
 
-      <div style="display:flex;gap:.75rem;justify-content:flex-end;border-top:1px solid rgba(255,255,255,.06);padding-top:.75rem">
-        <button onclick="cerrarNuevaCampana()" style="background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.75rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer">Cancelar</button>
-        <button id="ncpn-save-btn" onclick="crearCampana()" style="background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.4);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.75rem;font-weight:700;padding:.5rem 1.6rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.25)'" onmouseout="this.style.background='rgba(0,212,255,.12)'">Crear campa&ntilde;a</button>
+      <!-- Ver destinatarios -->
+      <button class="ncpn-preview-btn" id="ncpn-preview-btn" onclick="previewDestinatarios()">👁 Ver destinatarios</button>
+
+      <!-- Vista previa cards -->
+      <div id="ncpn-preview-box" style="display:none;background:rgba(0,0,0,.3);border:1px solid #222;border-radius:10px;padding:1rem">
+        <div id="ncpn-preview-count" style="font-family:'Orbitron',sans-serif;font-size:1.4rem;color:var(--neon);text-align:center;margin-bottom:.75rem">0</div>
+        <div id="ncpn-preview-sub" style="text-align:center;font-size:.72rem;color:#666;margin-bottom:1rem">leads recibirán esta campaña</div>
+        <div id="ncpn-preview-cards" style="display:flex;flex-direction:column;gap:.4rem;max-height:200px;overflow-y:auto"></div>
       </div>
+
+    </div>
+    <!-- Footer sticky -->
+    <div style="position:sticky;bottom:0;background:#111;border-top:1px solid #222;padding:1rem 1.5rem;display:flex;justify-content:flex-end;gap:.75rem">
+      <button class="ncpn-cancel-btn" onclick="cerrarNuevaCampana()">Cancelar</button>
+      <button class="ncpn-create-btn" id="ncpn-create-btn" onclick="crearCampana()">✅ Crear campaña</button>
     </div>
   </div>
 </div>
@@ -6033,29 +6043,41 @@ async function previewDestinatarios() {
     const r = await fetch('/api/campanas/preview?' + params);
     const d = await r.json();
     const box = document.getElementById('ncpn-preview-box');
-    const muestraHtml = (d.muestra || []).map(m =>
-      `<div class="ncpn-preview-item">
-        <span style="color:${CPN_ESTADO_COLOR[m.estado]||'#888'}">${m.estado}</span>
-        <span>${esc(m.nombre)}</span>
-        <span style="color:var(--txt3);font-family:monospace">${m.telefono}</span>
-        <span style="color:${m.score>=70?'var(--red)':m.score>=40?'var(--orange)':'var(--txt3)'}">${m.score}pts</span>
-      </div>`
-    ).join('');
-    box.innerHTML = `
-      <div class="ncpn-preview-num">${d.total}</div>
-      <div class="ncpn-preview-sub">lead${d.total!==1?'s':''} recibirá${d.total!==1?'n':''} esta campaña</div>
-      ${d.muestra.length ? '<div class="ncpn-preview-list">' + muestraHtml + (d.total > 5 ? `<div class="ncpn-preview-item" style="color:var(--txt3)">+ ${d.total - 5} más...</div>` : '') + '</div>' : ''}`;
-  } catch(e) {
-    document.getElementById('ncpn-preview-box').innerHTML = '<div class="ncpn-preview-sub" style="color:var(--red)">Error al cargar preview</div>';
-  }
-  btn.disabled = false; btn.textContent = '&#128065; Ver destinatarios';
+    // Render cards estilo WhatsApp
+    const cards = (d.muestra || []).map(m => {
+      const inicial = (m.nombre || m.telefono || '?')[0].toUpperCase();
+      const colores = ['#00D4FF','#c084fc','#f59e0b','#22c55e','#ef4444','#3b82f6'];
+      const color = colores[inicial.charCodeAt(0) % colores.length];
+      const estadoColor = CPN_ESTADO_COLOR[m.estado] || '#888';
+      return `<div style="display:flex;align-items:center;gap:.75rem;padding:.5rem .75rem;background:rgba(255,255,255,.03);border-radius:8px;border:1px solid rgba(255,255,255,.06)">
+        <div style="width:36px;height:36px;border-radius:50%;background:${color}22;border:1.5px solid ${color}55;display:flex;align-items:center;justify-content:center;font-weight:700;color:${color};font-size:.85rem;flex-shrink:0">${inicial}</div>
+        <div style="min-width:0;flex:1">
+          <div style="font-size:.82rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.nombre || m.telefono)}</div>
+          <div style="font-size:.68rem;color:#666;font-family:monospace">+${m.telefono} · ${m.comuna || '—'}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:.2rem;flex-shrink:0">
+          <span style="background:${estadoColor}22;color:${estadoColor};border:1px solid ${estadoColor}44;border-radius:6px;padding:.1rem .4rem;font-size:.62rem;font-weight:700">${m.estado}</span>
+          <span style="font-size:.62rem;color:${m.score>=70?'#ef4444':m.score>=40?'#f59e0b':'#555'}">${m.score}pts</span>
+        </div>
+      </div>`;
+    }).join('');
+
+    const extraHtml = d.total > 5
+      ? `<div style="text-align:center;font-size:.72rem;color:#555;padding:.5rem">+ ${d.total - 5} contactos más...</div>`
+      : '';
+
+    document.getElementById('ncpn-preview-count').textContent = d.total;
+    document.getElementById('ncpn-preview-sub').textContent = `lead${d.total!==1?'s':''} recibirá${d.total!==1?'n':''} esta campaña`;
+    document.getElementById('ncpn-preview-cards').innerHTML = cards + extraHtml;
+    document.getElementById('ncpn-preview-box').style.display = 'block';
 }
 
 async function crearCampana() {
-  const nombre  = document.getElementById('ncpn-nombre').value.trim();
-  const mensaje = document.getElementById('ncpn-mensaje').value.trim();
-  if (!nombre || !mensaje) { alert('Nombre y mensaje son requeridos'); return; }
-  const btn = document.getElementById('ncpn-save-btn');
+  const nombre   = document.getElementById('ncpn-nombre').value.trim();
+  const template = document.getElementById('ncpn-template') ? document.getElementById('ncpn-template').value : 'bienvenida_conexion';
+  const mensaje  = template;
+  if (!nombre) { alert('El nombre de la campaña es requerido'); return; }
+  const btn = document.getElementById('ncpn-create-btn');
   btn.disabled = true; btn.textContent = 'Creando...';
   try {
     const r = await fetch('/api/campanas', {

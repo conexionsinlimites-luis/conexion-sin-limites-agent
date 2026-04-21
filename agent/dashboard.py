@@ -6206,6 +6206,74 @@ function renderDetalleCampana(c, dests) {
   }
 }
 
+
+async function pausarCampana(id) {
+  if (!confirm('¿Pausar esta campaña?')) return;
+  const r = await fetch(`/api/campanas/${id}/pausar`, {method:'POST'});
+  const d = await r.json();
+  if (d.ok) { actualizarCampanasList(); } else { alert('Error: ' + d.error); }
+}
+
+async function reanudarCampana(id) {
+  if (!confirm('¿Reanudar esta campaña?')) return;
+  const r = await fetch(`/api/campanas/${id}/reanudar`, {method:'POST'});
+  const d = await r.json();
+  if (d.ok) { actualizarCampanasList(); iniciarPollingProgreso(id); }
+  else { alert('Error: ' + d.error); }
+}
+
+let _progresoInterval = null;
+function iniciarPollingProgreso(id) {
+  if (_progresoInterval) clearInterval(_progresoInterval);
+  _progresoInterval = setInterval(async () => {
+    const r = await fetch(`/api/campanas/${id}/progreso`);
+    const d = await r.json();
+    if (!d.ok) return;
+    const el = document.getElementById(`progreso-${id}`);
+    if (el) {
+      el.innerHTML = `
+        <div style="margin:.5rem 0">
+          <div style="background:#222;border-radius:8px;height:8px;overflow:hidden">
+            <div style="background:#00D4FF;height:100%;width:${d.porcentaje}%;transition:width .5s"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:.7rem;color:#888;margin-top:.3rem">
+            <span>✅ ${d.enviados} enviados · ❌ ${d.fallidos} fallidos</span>
+            <span>${d.porcentaje}% · ${d.total} total</span>
+          </div>
+        </div>`;
+    }
+    if (d.estado === 'completada' || d.estado === 'cancelada' || d.estado === 'error') {
+      clearInterval(_progresoInterval);
+      actualizarCampanasList();
+    }
+  }, 3000);
+}
+
+async function subirExcel() {
+  const input = document.getElementById('excel-input');
+  const archivo = input.files[0];
+  if (!archivo) { alert('Selecciona un archivo CSV'); return; }
+  const btn = document.getElementById('btn-subir-excel');
+  btn.disabled = true; btn.textContent = 'Subiendo...';
+  const form = new FormData();
+  form.append('archivo', archivo);
+  try {
+    const r = await fetch('/api/campanas/subir-excel', {method:'POST', body: form});
+    const d = await r.json();
+    if (d.ok) {
+      alert(`✅ Cargados: ${d.insertados} nuevos · ${d.duplicados} duplicados · ${d.errores} errores`);
+      input.value = '';
+      actualizarCampanasList();
+    } else {
+      alert('Error: ' + d.error);
+    }
+  } catch(e) {
+    alert('Error al subir: ' + e.message);
+  }
+  btn.disabled = false; btn.textContent = '📤 Subir CSV';
+}
+
+
 </script>
 </body>
 </html>
@@ -6360,73 +6428,6 @@ _HTML_LOGIN = """<!DOCTYPE html>
   if (location.search.includes('error=1')) {
     document.getElementById('err').classList.add('show');
   }
-
-async function pausarCampana(id) {
-  if (!confirm('¿Pausar esta campaña?')) return;
-  const r = await fetch(`/api/campanas/${id}/pausar`, {method:'POST'});
-  const d = await r.json();
-  if (d.ok) { actualizarCampanasList(); } else { alert('Error: ' + d.error); }
-}
-
-async function reanudarCampana(id) {
-  if (!confirm('¿Reanudar esta campaña?')) return;
-  const r = await fetch(`/api/campanas/${id}/reanudar`, {method:'POST'});
-  const d = await r.json();
-  if (d.ok) { actualizarCampanasList(); iniciarPollingProgreso(id); }
-  else { alert('Error: ' + d.error); }
-}
-
-let _progresoInterval = null;
-function iniciarPollingProgreso(id) {
-  if (_progresoInterval) clearInterval(_progresoInterval);
-  _progresoInterval = setInterval(async () => {
-    const r = await fetch(`/api/campanas/${id}/progreso`);
-    const d = await r.json();
-    if (!d.ok) return;
-    const el = document.getElementById(`progreso-${id}`);
-    if (el) {
-      el.innerHTML = `
-        <div style="margin:.5rem 0">
-          <div style="background:#222;border-radius:8px;height:8px;overflow:hidden">
-            <div style="background:#00D4FF;height:100%;width:${d.porcentaje}%;transition:width .5s"></div>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:.7rem;color:#888;margin-top:.3rem">
-            <span>✅ ${d.enviados} enviados · ❌ ${d.fallidos} fallidos</span>
-            <span>${d.porcentaje}% · ${d.total} total</span>
-          </div>
-        </div>`;
-    }
-    if (d.estado === 'completada' || d.estado === 'cancelada' || d.estado === 'error') {
-      clearInterval(_progresoInterval);
-      actualizarCampanasList();
-    }
-  }, 3000);
-}
-
-async function subirExcel() {
-  const input = document.getElementById('excel-input');
-  const archivo = input.files[0];
-  if (!archivo) { alert('Selecciona un archivo CSV'); return; }
-  const btn = document.getElementById('btn-subir-excel');
-  btn.disabled = true; btn.textContent = 'Subiendo...';
-  const form = new FormData();
-  form.append('archivo', archivo);
-  try {
-    const r = await fetch('/api/campanas/subir-excel', {method:'POST', body: form});
-    const d = await r.json();
-    if (d.ok) {
-      alert(`✅ Cargados: ${d.insertados} nuevos · ${d.duplicados} duplicados · ${d.errores} errores`);
-      input.value = '';
-      actualizarCampanasList();
-    } else {
-      alert('Error: ' + d.error);
-    }
-  } catch(e) {
-    alert('Error al subir: ' + e.message);
-  }
-  btn.disabled = false; btn.textContent = '📤 Subir CSV';
-}
-
 </script>
 </body>
 </html>"""

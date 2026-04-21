@@ -4039,7 +4039,7 @@ function switchTab(tab) {
     bk.classList.add('active');
     actualizarCampanasList();
   } else if (tab === 'sin-respuesta') {
-    psr.style.display = '';
+    psr.style.display = 'block';
     if (bsr) bsr.classList.add('active');
     actualizarSinRespuesta();
   }

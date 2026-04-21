@@ -862,11 +862,7 @@ async def liberar_lead(telefono: str):
         )
     # Inyectar mensaje interno para que Valentina retome el contexto
     try:
-        await _crm.guardar_mensaje(
-            telefono, "user",
-            "Valentina, continúa atendiendo a este cliente",
-            "seguimiento", None
-        )
+        pass
     except Exception:
         pass
     await broadcast_event({"type": "mode_change", "telefono": telefono, "modo_humano": False})
@@ -3013,7 +3009,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   .sr-export-btn:hover { background: rgba(0,212,255,.18); box-shadow: 0 0 12px rgba(0,212,255,.25); }
 
   .sr-table-wrap {
-    overflow-x: auto; border-radius: 12px;
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 70vh; border-radius: 12px;
     border: 1px solid var(--border);
     background: rgba(0,0,0,.18);
     -webkit-overflow-scrolling: touch;
@@ -5723,7 +5721,7 @@ function renderSinRespuesta() {
       <td>${promo ? `<span class="sr-promo">${esc(promo)}</span>` : '<span class="sr-promo empty">—</span>'}</td>
       <td>
         <div class="sr-actions">
-          <button class="sr-btn reactivar"     onclick="srReactivar('${safeTel}',${idx})">&#128172; Reactivar</button>
+          <button class="sr-btn reactivar"     onclick="srMostrarModal('${safeTel}',${idx})">&#128172; Reactivar</button>
           <button class="sr-btn incontactable" onclick="srIncontactable('${safeTel}',${idx})">&#10005; Incontactable</button>
           <button class="sr-btn ver-chat"      onclick="srVerChat('${safeTel}')">&#128172; Ver chat</button>
         </div>
@@ -5732,7 +5730,55 @@ function renderSinRespuesta() {
   }).join('');
 }
 
-async function srReactivar(telefono, idx) {
+
+function srMostrarModal(telefono, idx) {
+  const lead = _srData[idx];
+  const nombre = lead ? (lead.nombre || telefono) : telefono;
+  const nombreFmt = nombre.split(' ')[0];
+  const msgDefault = `Hola ${nombreFmt}! Te escribo nuevamente desde Conexión Sin Límites. ¿Tienes un momento para que podamos ayudarte? 😊`;
+  
+  // Crear modal si no existe
+  let modal = document.getElementById('modal-reactivar');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'modal-reactivar';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;';
+    modal.innerHTML = `
+      <div style="background:#161616;border:1px solid #333;border-radius:14px;padding:1.5rem;width:90%;max-width:500px;">
+        <h3 style="color:#00D4FF;margin-bottom:1rem;font-family:'Space Grotesk',sans-serif;">💬 Reactivar contacto</h3>
+        <textarea id="modal-reactivar-msg" style="width:100%;height:120px;background:#0a0a0a;border:1px solid #333;border-radius:8px;padding:.75rem;color:#f5f5f5;font-size:.85rem;resize:vertical;"></textarea>
+        <div style="display:flex;gap:.75rem;margin-top:1rem;justify-content:flex-end;">
+          <button onclick="document.getElementById('modal-reactivar').style.display='none'" style="padding:.5rem 1rem;border-radius:8px;border:1px solid #444;background:transparent;color:#888;cursor:pointer;">Cancelar</button>
+          <button onclick="srEnviarReactivacion()" style="padding:.5rem 1.25rem;border-radius:8px;border:none;background:#00D4FF;color:#000;font-weight:700;cursor:pointer;">Enviar</button>
+          <button onclick="srSoloVerChat()" style="padding:.5rem 1.25rem;border-radius:8px;border:none;background:#333;color:#f5f5f5;cursor:pointer;">Solo ver chat</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  
+  modal._telefono = telefono;
+  modal._idx = idx;
+  document.getElementById('modal-reactivar-msg').value = msgDefault;
+  modal.style.display = 'flex';
+}
+
+function srEnviarReactivacion() {
+  const modal = document.getElementById('modal-reactivar');
+  const telefono = modal._telefono;
+  const idx = modal._idx;
+  const mensaje = document.getElementById('modal-reactivar-msg').value.trim();
+  modal.style.display = 'none';
+  srReactivar(telefono, idx, mensaje);
+}
+
+function srSoloVerChat() {
+  const modal = document.getElementById('modal-reactivar');
+  const telefono = modal._telefono;
+  modal.style.display = 'none';
+  srVerChat(telefono);
+}
+
+async function srReactivar(telefono, idx, mensaje = null) {
   const row = document.getElementById('sr-row-' + idx);
   const btn = row ? row.querySelector('.sr-btn.reactivar') : null;
   if (btn) { btn.disabled = true; btn.textContent = 'Enviando...'; }

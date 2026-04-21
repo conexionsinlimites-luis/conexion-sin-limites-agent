@@ -6070,6 +6070,12 @@ async function previewDestinatarios() {
     document.getElementById('ncpn-preview-sub').textContent = `lead${d.total!==1?'s':''} recibirá${d.total!==1?'n':''} esta campaña`;
     document.getElementById('ncpn-preview-cards').innerHTML = cards + extraHtml;
     document.getElementById('ncpn-preview-box').style.display = 'block';
+  } catch(e) {
+    document.getElementById('ncpn-preview-cards').innerHTML = '<div style="color:#ef4444;font-size:.78rem">Error: ' + e.message + '</div>';
+    document.getElementById('ncpn-preview-box').style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = '👁 Ver destinatarios';
+  }
 }
 
 async function crearCampana() {

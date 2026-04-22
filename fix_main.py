@@ -341,8 +341,7 @@ def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:
     """
     patron_alerta  = r'\[ALERTA_SUPERVISOR[^\]]*\]'
     patron_caliente = r'(?im)^[^\n]*\b(LEAD[\s_]CALIENTE|ALERTA[\s_]SUPERVISOR)\b[^\n]*$'
-    patron_marcador = r'\[[A-Z_]+\|[^\]]*\]'
-    patron_ficha    = r'(?s)\n?[\u2501\u2500]{5,}.*?[\u2501\u2500]{5,}\n?'   # cualquier [TAG|...] interno
+    patron_marcador = r'\[[A-Z_]+\|[^\]]*\]'   # cualquier [TAG|...] interno
 
     tiene_alerta = bool(re.search(patron_alerta, respuesta))
 
@@ -362,7 +361,6 @@ def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:
     limpia = re.sub(patron_caliente, "", limpia, flags=re.IGNORECASE | re.MULTILINE)
     limpia = re.sub(patron_marcador, "", limpia)
     # Colapsar líneas vacías múltiples en una sola
-    limpia = re.sub(patron_ficha, '', limpia)
     limpia = re.sub(r'\n{3,}', '\n\n', limpia).strip()
 
     return limpia, datos

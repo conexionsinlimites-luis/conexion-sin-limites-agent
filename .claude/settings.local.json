@@ -28,7 +28,8 @@
       "Bash(taskkill:*)",
       "Bash(PYTHONIOENCODING=utf-8 python scripts/crm_leads.py)",
       "Bash(netstat -ano)",
-      "Bash(xargs -r -I{} taskkill //F //PID {})"
+      "Bash(xargs -r -I{} taskkill //F //PID {})",
+      "Bash(PYTHONIOENCODING=utf-8 python scripts/envio_masivo.py \"C:/Users/nn/Desktop/base_datos_priorizada.xlsx\" --prioridad 1 --limite 100)"
     ]
   }
 }

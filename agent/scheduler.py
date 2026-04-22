@@ -47,8 +47,7 @@ TIPO_FOLLOWUP: dict[str, str] = {
     "60h":   "cierre",
     "720h":  "reactivacion",
     "1440h": "reactivacion",
-}  # fin de la cadena — no programar más
-}
+}  # fin de la cadena
 
 
 def _en_horario_chile() -> bool:
@@ -147,3 +146,4 @@ async def iniciar_scheduler(proveedor):
             logger.error(f"Error inesperado en scheduler: {e}")
 
         await asyncio.sleep(INTERVALO_SECS)
+

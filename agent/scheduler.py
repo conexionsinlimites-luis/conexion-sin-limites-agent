@@ -23,6 +23,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import agent.crm as crm
+from agent.templates_followup import get_mensaje_followup, TIPO_FOLLOWUP
 
 logger = logging.getLogger("agentkit")
 
@@ -33,11 +34,20 @@ INTERVALO_SECS = 5 * 60  # revisar cada 5 minutos
 
 # Cadena de secuencia: qué tipo programar después de enviar cada uno
 SIGUIENTE_FOLLOWUP: dict[str, str | None] = {
-    "2h":  "24h",
-    "24h": "3d",
-    "3d":  "30d",
-    "30d": "60d",
-    "60d": None,  # fin de la cadena — no programar más
+    "9h":   "24h",
+    "24h":  "60h",
+    "60h":  "720h",
+    "720h": "1440h",
+    "1440h": None,
+}
+
+TIPO_FOLLOWUP: dict[str, str] = {
+    "9h":    "suave",
+    "24h":   "medio",
+    "60h":   "cierre",
+    "720h":  "reactivacion",
+    "1440h": "reactivacion",
+}  # fin de la cadena — no programar más
 }
 
 
@@ -86,7 +96,10 @@ async def _procesar_followups(proveedor) -> int:
         followup_id = followup["id"]
         tipo        = followup["tipo"]
 
-        mensaje = _rellenar_plantilla(mensaje_raw, nombre, subproducto)
+        comuna = followup.get("comuna", "")
+        tipo_followup = TIPO_FOLLOWUP.get(tipo, "suave")
+        mensaje_template = get_mensaje_followup(tipo_followup, nombre.split()[0] if nombre else "Cliente", comuna or None)
+        mensaje = mensaje_template if mensaje_template else _rellenar_plantilla(mensaje_raw, nombre, subproducto)
 
         try:
             ok = await proveedor.enviar_mensaje(telefono, mensaje)
@@ -125,7 +138,7 @@ async def iniciar_scheduler(proveedor):
     Cada 5 minutos revisa y envía follow-ups pendientes dentro del horario Chile.
     """
     logger.info("Scheduler de follow-ups iniciado (intervalo: 5 min | ventana: 9am-9pm Chile)")
-    logger.info("Cadena: primera respuesta → 2h → 24h → 3d → 30d → 60d")
+    logger.info("Cadena: primera respuesta → 9h → 24h → 60h → 30d → 60d")
 
     while True:
         try:

@@ -298,8 +298,8 @@ async def webhook_handler(request: Request):
             # La cadena completa es 2h → 24h → 3d → 30d → 60d (cada uno se encadena en scheduler.py)
             if estado_actual not in ("cerrado", "modo_humano"):
                 try:
-                    await crm.programar_followup(msg.telefono, "2h")
-                    _log("INFO", f"Follow-up 2h programado para {msg.telefono}")
+                    await crm.programar_followup(msg.telefono, "9h")
+                    _log("INFO", f"Follow-up 9h programado para {msg.telefono}")
                 except Exception as _fe:
                     _log("ERROR", f"Error programando follow-up: {_fe}")
 

@@ -190,6 +190,8 @@ def _estado_inline(lead: dict) -> str:
     if instruccion:
         lineas.append(f"INSTRUCCION ACTIVA: {instruccion}")
 
+    lineas.append("\nREGLA OBLIGATORIA: Cuando el cliente entregue una direccion completa (calle, numero y comuna), incluye AL FINAL de tu respuesta este marcador exacto (el cliente NO lo ve): [ALERTA_SUPERVISOR|nombre=NOMBRE_REAL|tel=TELEFONO_REAL|dir=DIRECCION_COMPLETA] Reemplaza con los datos reales del lead. OBLIGATORIO sin excepcion.")
+    
     return "\n".join(lineas)
 
 

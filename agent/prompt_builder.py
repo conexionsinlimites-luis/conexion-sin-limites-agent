@@ -191,7 +191,7 @@ def _estado_inline(lead: dict) -> str:
         lineas.append(f"INSTRUCCION ACTIVA: {instruccion}")
 
     lineas.append("\nREGLA OBLIGATORIA: Cuando el cliente entregue una direccion completa (calle, numero y comuna), incluye AL FINAL de tu respuesta este marcador exacto (el cliente NO lo ve): [ALERTA_SUPERVISOR|nombre=NOMBRE_REAL|tel=TELEFONO_REAL|dir=DIRECCION_COMPLETA] Reemplaza con los datos reales del lead. OBLIGATORIO sin excepcion.")
-    
+
     return "\n".join(lineas)
 
 
@@ -281,7 +281,9 @@ def _instruccion_por_estado(estado: str, msgs: int, objeciones: list) -> str:
     if estado == "DIRECCION_OBTENIDA":
         return "Dirección recibida. Confirmar datos al cliente y en la MISMA respuesta incluir OBLIGATORIAMENTE este marcador exacto al final (invisible para el cliente):\n[ALERTA_SUPERVISOR|nombre=NOMBRE|tel=TELEFONO|dir=DIRECCION]\nReemplaza NOMBRE, TELEFONO y DIRECCION con los datos reales del lead."
     if estado == "LISTO_PARA_CIERRE":
-        return "Lead listo. Enviar mensaje de cierre y confirmar que el supervisor contactará."
+        return ("Lead ya cerrado. Si el cliente vuelve a escribir, NO lo trates como nuevo. "
+                "Salúdalo por su nombre, pregúntale cómo le fue con el supervisor o si necesita algo más. "
+                "NUNCA vuelvas a pedir datos que ya tienes.")
     if estado in ("NUEVO", "CONTACTADO") and msgs == 0:
         return "Primera interacción — NO ofrecer nada todavía. Generar confianza primero."
     if estado == "INTERESADO" and msgs >= 3:

@@ -2511,8 +2511,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
     /* Live Chat móvil */
     .chat-container { margin-bottom: 1.5rem; }
-    .chat-sidebar   { height: 185px; }
-    .chat-main      { height: 390px; }
+    .chat-sidebar   { height: 160px; }
+    .chat-main      { height: calc(100dvh - 280px); min-height: 300px; }
+    .chat-input-row { position: sticky; bottom: 0; z-index: 10; }
     .chat-main-header { padding: .65rem 1rem; }
     .chat-contact-name  { font-size: .82rem; }
     .chat-contact-phone { font-size: .6rem; }

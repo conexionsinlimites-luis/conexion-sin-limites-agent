@@ -277,7 +277,7 @@ def _instruccion_por_estado(estado: str, msgs: int, objeciones: list) -> str:
     estado = estado.upper()
 
     if estado == "DIRECCION_OBTENIDA":
-        return "Dirección recibida. Confirmar datos y disparar alerta al supervisor AHORA."
+        return "Dirección recibida. Confirmar datos al cliente y en la MISMA respuesta incluir OBLIGATORIAMENTE este marcador exacto al final (invisible para el cliente):\n[ALERTA_SUPERVISOR|nombre=NOMBRE|tel=TELEFONO|dir=DIRECCION]\nReemplaza NOMBRE, TELEFONO y DIRECCION con los datos reales del lead."
     if estado == "LISTO_PARA_CIERRE":
         return "Lead listo. Enviar mensaje de cierre y confirmar que el supervisor contactará."
     if estado in ("NUEVO", "CONTACTADO") and msgs == 0:

@@ -5698,7 +5698,17 @@ setAppHeight();
 window.addEventListener('resize', setAppHeight);
 window.addEventListener('load', () => requestAnimationFrame(setAppHeight));
 if (window.visualViewport) {
-  window.visualViewport.addEventListener('resize', setAppHeight);
+  window.visualViewport.addEventListener('resize', () => {
+    setAppHeight();
+    // Ajustar chat cuando sube el teclado
+    const chatMain = document.querySelector('.chat-main');
+    if (chatMain) {
+      const vh = window.visualViewport.height;
+      const rect = chatMain.getBoundingClientRect();
+      const available = vh - rect.top - 10;
+      if (available > 150) chatMain.style.height = available + 'px';
+    }
+  });
 }
 
 // =========================================================================

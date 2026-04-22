@@ -331,38 +331,41 @@ def _calcular_nuevo_estado(estado_actual: str, intencion: str) -> str:
 
 
 def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:
-    """
-    Detecta y extrae el marcador [ALERTA_SUPERVISOR|...] de la respuesta de Valentina.
-    También elimina cualquier texto interno que NUNCA debe ver el cliente:
-    - Bloques [ALERTA_SUPERVISOR|...] en cualquier variante
-    - Líneas que contengan "LEAD CALIENTE", "LEAD_CALIENTE", etc.
-    - Líneas que contengan otros marcadores internos ([ALERTA...], [LEAD...])
-    Retorna (respuesta_limpia, datos_alerta_o_None).
-    """
-    patron_alerta  = r'\[ALERTA_SUPERVISOR[^\]]*\]'
+    patron_alerta   = r'\[ALERTA_SUPERVISOR[^\]]*\]'
     patron_caliente = r'(?im)^[^\n]*\b(LEAD[\s_]CALIENTE|ALERTA[\s_]SUPERVISOR)\b[^\n]*$'
     patron_marcador = r'\[[A-Z_]+\|[^\]]*\]'
-    patron_ficha    = r'(?s)\n?[\u2501\u2500]{5,}.*?[\u2501\u2500]{5,}\n?'   # cualquier [TAG|...] interno
+    patron_ficha    = r'(?s)-{3,}[\s\n]+[─━─]{5,}.*?[─━─]{5,}[\s\n]*'
+    patron_ficha2   = r'(?s)[─━]{5,}.*?[─━]{5,}'
 
     tiene_alerta = bool(re.search(patron_alerta, respuesta))
-
     datos = None
+
     if tiene_alerta:
-        def _campo(key: str) -> str:
+        def _campo(key):
             m = re.search(rf'{key}=([^|\]]*)', respuesta)
             return m.group(1).strip() if m else ""
-        datos = {
-            "nombre": _campo("nombre"),
-            "tel":    _campo("tel"),
-            "dir":    _campo("dir"),
-        }
+        datos = {"nombre": _campo("nombre"), "tel": _campo("tel"), "dir": _campo("dir")}
+
+    # Detectar ficha formateada con separadores ─── o ━━━
+    if not datos:
+        bloque = re.search(patron_ficha2, respuesta, re.DOTALL)
+        if bloque:
+            bloque_texto = bloque.group(0)
+            def _extraer_campo(emoji, texto):
+                m = re.search(rf'{emoji}\s*([^\n]+)', texto)
+                return m.group(1).strip() if m else ""
+            nombre = _extraer_campo('👤', bloque_texto).replace('Nombre:', '').replace('*','').strip()
+            tel    = _extraer_campo('📱', bloque_texto).replace('Teléfono:', '').replace('+','').strip()
+            dir_   = _extraer_campo('📍', bloque_texto).replace('Dirección:', '').strip()
+            if dir_ and dir_ not in ('pendiente', 'Por confirmar', ''):
+                datos = {"nombre": nombre, "tel": tel, "dir": dir_}
 
     # Limpiar todo lo que no debe llegar al cliente
     limpia = re.sub(patron_alerta,   "", respuesta)
     limpia = re.sub(patron_caliente, "", limpia, flags=re.IGNORECASE | re.MULTILINE)
     limpia = re.sub(patron_marcador, "", limpia)
-    # Colapsar líneas vacías múltiples en una sola
-    limpia = re.sub(patron_ficha, '', limpia)
+    limpia = re.sub(patron_ficha2,   "", limpia, flags=re.DOTALL)
+    limpia = re.sub(r'-{3,}',        "", limpia)
     limpia = re.sub(r'\n{3,}', '\n\n', limpia).strip()
 
     return limpia, datos

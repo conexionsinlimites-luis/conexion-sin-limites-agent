@@ -114,16 +114,27 @@ async def generar_respuesta(
     else:
         num_mensajes = len(historial)
         if num_mensajes >= 2:
-            system_prompt += (
-                "\n\n─────────────────────────────────────────────\n"
-                "CONTEXTO SESIÓN ACTUAL\n"
-                "Nombre del cliente: desconocido.\n"
-                "→ En el próximo mensaje natural, pide el nombre de forma cálida.\n"
-                "   Ejemplo: '¿Con quién tengo el gusto? 😊'\n"
-                "   o bien intégralo: 'Por cierto, ¿cómo te llamas?'\n"
-                "→ Solo pregúntalo UNA vez. Si ya lo preguntaste antes, no insistas.\n"
-                "─────────────────────────────────────────────"
-            )
+            estado_lead = (lead.get("estado") or "") if lead else ""
+            if estado_lead in ("listo_para_cierre", "cerrado", "caliente", "direccion_obtenida"):
+                system_prompt += (
+                    "\n\n─────────────────────────────────────────────\n"
+                    "CONTEXTO SESIÓN ACTUAL\n"
+                    "Nombre del cliente: aún no capturado.\n"
+                    "→ NO preguntes el nombre — este cliente ya tiene historial contigo.\n"
+                    "→ Salúdalo y pregunta en qué puedes ayudarle hoy.\n"
+                    "─────────────────────────────────────────────"
+                )
+            else:
+                system_prompt += (
+                    "\n\n─────────────────────────────────────────────\n"
+                    "CONTEXTO SESIÓN ACTUAL\n"
+                    "Nombre del cliente: desconocido.\n"
+                    "→ En el próximo mensaje natural, pide el nombre de forma cálida.\n"
+                    "   Ejemplo: '¿Con quién tengo el gusto? 😊'\n"
+                    "   o bien intégralo: 'Por cierto, ¿cómo te llamas?'\n"
+                    "→ Solo pregúntalo UNA vez. Si ya lo preguntaste antes, no insistas.\n"
+                    "─────────────────────────────────────────────"
+                )
         else:
             system_prompt += (
                 "\n\n─────────────────────────────────────────────\n"

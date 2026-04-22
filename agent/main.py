@@ -238,7 +238,8 @@ async def webhook_handler(request: Request):
                 intencion=intencion,
             )
 
-            historial = await obtener_historial(msg.telefono)
+            historial_raw = await crm.obtener_historial(msg.telefono, limite=20)
+            historial = [{"role": m.get("rol", m.get("role", "user")), "content": m.get("mensaje", m.get("content", ""))} for m in historial_raw]
             _log("INFO", f"Historial recuperado: {len(historial)} mensajes previos")
 
             # Extraer campos clave del lead para el prompt_builder

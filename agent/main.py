@@ -30,6 +30,7 @@ from agent.campanas import inicializar_campanas
 
 # Número del supervisor comercial que recibe alertas (mismo que TELEFONO_OWNER)
 TELEFONO_SUPERVISOR = TELEFONO_OWNER
+_notificaciones_enviadas: dict = {}
 
 # Slug del cliente activo — usado por prompt_builder para cargar config_json
 CLIENTE_SLUG = "csl"
@@ -309,6 +310,24 @@ async def webhook_handler(request: Request):
                 if dir_ and dir_ != "pendiente":
                     await crm.crear_o_actualizar_lead(msg.telefono, direccion=dir_)
                 _log("INFO", f"Lead {msg.telefono} marcado como listo_para_cierre en CRM")
+
+            # Extraer dirección del 📍 en la respuesta de Valentina y notificar supervisor
+            m_dir = re.search(r'📍\s*([^\n]+)', respuesta_limpia)
+            if m_dir:
+                dir_extraida = m_dir.group(1).strip()
+                if len(dir_extraida) > 5 and dir_extraida.lower() not in ("pendiente", "por confirmar"):
+                    await crm.crear_o_actualizar_lead(msg.telefono, direccion=dir_extraida)
+                    lead_final = await crm.obtener_lead(msg.telefono)
+                    tiene_nombre = (lead_final.get("nombre") or "").strip().lower() not in ("", "desconocido", "cliente") if lead_final else False
+                    ultimo_notif = _notificaciones_enviadas.get(msg.telefono, 0)
+                    ahora = datetime.utcnow().timestamp()
+                    if tiene_nombre and (ahora - ultimo_notif) > 3600:
+                        _notificaciones_enviadas[msg.telefono] = ahora
+                        await _enviar_alerta_supervisor(
+                            {"dir": dir_extraida, "nombre": lead_final.get("nombre", ""), "tel": msg.telefono},
+                            msg.telefono
+                        )
+                        _log("INFO", f"Alerta supervisor por dirección detectada — {msg.telefono}")
 
         except Exception as e:
             _log("ERROR", f"Error procesando mensaje de {msg.telefono}: {e}\n{traceback.format_exc()}")

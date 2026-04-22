@@ -455,7 +455,8 @@ def extraer_nombre_de_mensaje(mensaje: str) -> str | None:
         "bien", "mal", "aqui", "aquí", "solo", "sola", "yo", "tu", "él", "ella",
         "un", "una", "el", "la", "de", "del", "por", "para", "con", "sin",
         "cliente", "persona", "alguien", "nadie", "nuevo", "nueva",
-        "buenas", "buenos", "hola", "chao", "gracias", "listo", "claro",
+        "buenas", "buenos", "hola", "holas", "chao", "gracias",
+        "hola!", "hello", "hey", "buenas!", "buenos!", "listo", "claro",
         "dale", "ok", "oka", "oki", "okey", "perfecto", "entendido",
     }
     patrones = [

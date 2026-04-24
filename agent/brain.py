@@ -85,6 +85,17 @@ async def generar_respuesta(
         lead=lead,
     )
 
+    # Detectar si quien escribe es el supervisor
+    tel_limpio = (telefono or "").replace("+", "").strip()
+    if tel_limpio in ("56978016298", "978016298"):
+        system_prompt += (
+            "\n\n─────────────────────────────────────────────\n"
+            "ATENCIÓN: Quien te escribe ahora es Luis Barrios, tu supervisor y jefe.\n"
+            "→ Reconócelo directamente y trátalo con confianza.\n"
+            "→ Si te pide un resumen, dale estado de leads calientes, listos para cierre o pendientes.\n"
+            "→ Puedes hablar libremente sobre el sistema con él.\n"
+            "─────────────────────────────────────────────"
+        )
     # Inyectar contexto del nombre para que Valentina lo use o lo pida
     INVALIDOS = {"", "desconocido", "none", "null", "cliente", "unknown"}
     nombre_valido = nombre_cliente and nombre_cliente.strip().lower() not in INVALIDOS

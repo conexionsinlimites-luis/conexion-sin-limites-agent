@@ -154,6 +154,10 @@ async def webhook_handler(request: Request):
             _log("INFO", f"Mensaje ignorado — es_propio={msg.es_propio} texto='{msg.texto}'")
             continue
 
+        if msg.telefono in ("56978016298", "56941762315"):
+            _log("INFO", f"Mensaje del supervisor ignorado — {msg.telefono}")
+            continue
+
         # Si es audio, transcribirlo antes de procesar
         if msg.audio_id:
             try:

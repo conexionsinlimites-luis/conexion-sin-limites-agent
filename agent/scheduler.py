@@ -23,7 +23,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import agent.crm as crm
-from agent.templates_followup import get_mensaje_followup, TIPO_FOLLOWUP
+from agent.templates_followup import get_mensaje_followup
 
 logger = logging.getLogger("agentkit")
 

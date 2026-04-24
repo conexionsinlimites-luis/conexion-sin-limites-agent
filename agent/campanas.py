@@ -164,10 +164,12 @@ async def crear_campana(nombre: str, mensaje: str, filtros: dict) -> int:
             total,
         )
 
-        if leads:
+        limite = int(filtros.get("limite") or 0)
+        leads_finales = list(leads)[:limite] if limite > 0 else list(leads)
+        if leads_finales:
             await conn.executemany(
                 "INSERT INTO campana_destinatarios (campana_id, telefono, nombre) VALUES ($1,$2,$3)",
-                [(campana_id, r["telefono"], r["nombre"] or "") for r in leads],
+                [(campana_id, r["telefono"], r["nombre"] or "") for r in leads_finales],
             )
 
     logger.info(f"Campaña #{campana_id} '{nombre}' creada — {total} destinatarios")

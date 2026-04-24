@@ -423,6 +423,7 @@ async def api_crear_campana(request: Request):
         "comuna":    (body.get("comuna") or "").strip(),
         "desde":     (body.get("desde") or "").strip(),
         "hasta":     (body.get("hasta") or "").strip(),
+        "limite":    int(body.get("limite") or 0),
     }
     campana_id = await _campanas.crear_campana(nombre, mensaje, filtros)
     return JSONResponse({"ok": True, "id": campana_id})
@@ -3858,6 +3859,11 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- Límite de envío -->
+      <div style="margin-bottom:.75rem">
+        <div class="ncpn-label">🔢 Límite de envío (opcional)</div>
+        <input id="ncpn-limite" class="ncpn-input" type="number" min="1" max="500" placeholder="Ej: 100 (dejar vacío = todos)">
+      </div>
       <!-- Ver destinatarios -->
       <button class="ncpn-preview-btn" id="ncpn-preview-btn" onclick="previewDestinatarios()">👁 Ver destinatarios</button>
 
@@ -6122,6 +6128,7 @@ async function crearCampana() {
         comuna:    document.getElementById('ncpn-comuna').value,
         desde:     document.getElementById('ncpn-desde').value,
         hasta:     document.getElementById('ncpn-hasta').value,
+        limite:    parseInt(document.getElementById('ncpn-limite').value) || 0,
       }),
     });
     if (r.ok) {

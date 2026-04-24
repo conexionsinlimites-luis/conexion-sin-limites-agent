@@ -74,7 +74,8 @@ def _cargar_prompt_base_txt() -> str:
         with open("config/prompt_base.txt", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        logger.warning("prompt_builder: config/prompt_base.txt no encontrado")
+        import os
+        logger.warning(f"prompt_builder: config/prompt_base.txt no encontrado — cwd={os.getcwd()}")
         return None
 
 

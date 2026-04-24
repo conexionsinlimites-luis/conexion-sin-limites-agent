@@ -362,6 +362,9 @@ async def construir_prompt(
                     resumen       = resumen or "(sin resumen disponible aún)",
                 )
                 # Agregar bloque completo de contexto al final
+                supervisor_inst = config.get("supervisor_instruccion", "")
+                if supervisor_inst:
+                    prompt += f"\n\nSUPERVISOR: {supervisor_inst}"
                 prompt += _seccion_estado_lead(lead, estado, resumen)
                 logger.debug(
                     f"prompt_builder: Ruta A — template+config_json "

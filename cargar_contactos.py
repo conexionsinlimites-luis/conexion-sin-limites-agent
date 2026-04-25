@@ -1,7 +1,7 @@
-﻿import openpyxl, requests
+import openpyxl, requests
 
 URL = "https://vazneyvdycwfhqipyxdi.supabase.co"
-KEY = "sb_secret_X_1CDqRGfwaKXB2QIJAPeA_BFfxpPYa"
+KEY = "SUPABASE_SECRET_KEY"
 HEADERS = {
     "apikey": KEY,
     "Authorization": f"Bearer {KEY}",

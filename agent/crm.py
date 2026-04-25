@@ -269,7 +269,8 @@ async def crear_o_actualizar_lead(telefono: str, nombre: str = None, **kwargs):
                 identificador = generar_identificador(
                     kwargs.get("subproducto", "TELECOM"),
                     nombre or "CLIENTE",
-                    kwargs.get("estado", "nuevo")
+                    kwargs.get("estado", "nuevo"),
+                    telefono
                 )
                 await conn.execute("""
                     INSERT INTO leads
@@ -289,9 +290,10 @@ async def crear_o_actualizar_lead(telefono: str, nombre: str = None, **kwargs):
                 )
 
 
-def generar_identificador(producto: str, nombre: str, estado: str) -> str:
+def generar_identificador(producto: str, nombre: str, estado: str, telefono: str = "") -> str:
     """Generar identificador único tipo V-DIRECTV-PEDRO PEREZ-CALIENTE"""
-    return f"V-{producto.upper().replace(' ', '')}-{nombre.upper().strip()}-{estado.upper()}"
+    tel_suffix = telefono[-4:] if telefono else ""
+    return f"V-{producto.upper().replace(' ', '')}-{nombre.upper().strip()}-{estado.upper()}-{tel_suffix}"
 
 
 async def obtener_lead(telefono: str) -> dict | None:

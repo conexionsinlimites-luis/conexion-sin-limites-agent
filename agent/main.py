@@ -257,14 +257,27 @@ async def webhook_handler(request: Request):
                 f"estado={estado_lead} resumen={'sí' if resumen_lead else 'no'}"
             )
 
+            # Detectar si el mensaje es sobre productos Hotmart → usar Constanza
+            KEYWORDS_CONSTANZA = [
+                "canva", "conserva", "envasar", "curso", "pdf", "hotmart",
+                "emprender", "negocio desde casa", "salsas", "recetas",
+                "diseño", "diseño grafico", "arte de envasar", "mrr"
+            ]
+            texto_lower = msg.texto.lower()
+            slug_activo = "constanza" if any(k in texto_lower for k in KEYWORDS_CONSTANZA) else CLIENTE_SLUG
+            cliente_id_activo = cliente_id
+            if slug_activo == "constanza":
+                cliente_id_activo = 5
+                _log("INFO", f"Orquestador: derivando a Constanza — keyword detectada")
+
             respuesta = await generar_respuesta(
                 msg.texto,
                 historial,
                 nombre_cliente,
                 nombre_recien_capturado,
                 telefono=msg.telefono,
-                cliente_slug=CLIENTE_SLUG,
-                cliente_id=cliente_id,
+                cliente_slug=slug_activo,
+                cliente_id=cliente_id_activo,
                 lead=lead_ref,
             )
             _log("INFO", f"Respuesta generada: '{respuesta[:100]}'")

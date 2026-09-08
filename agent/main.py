@@ -7,16 +7,17 @@ Funciona con cualquier proveedor (Whapi, Meta, Twilio) gracias a la capa de prov
 """
 
 import re
+import json
 import asyncio
 import logging
 import traceback
 from collections import deque
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 
-from agent.brain import generar_respuesta
+from agent.brain import generar_respuesta, client as claude_client
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
 from agent.transcriber import transcribir
@@ -202,7 +203,7 @@ async def webhook_handler(request: Request):
             continue
 
         if msg.telefono in ("56974394322", "56978016298"):
-            await _procesar_mensaje_dueño(msg.telefono)
+            await _procesar_mensaje_dueño(msg.telefono, msg.texto)
             continue
 
         # Si es audio, transcribirlo antes de procesar
@@ -496,22 +497,274 @@ async def _enviar_notificacion_caliente(telefono_cliente: str):
         _log("ERROR", f"Error notificando lead caliente: {e}")
 
 
-async def _procesar_mensaje_dueño(telefono: str):
+_MENU_DUEÑO = (
+    "No reconocí esa consulta. Por ahora puedo responder:\n"
+    "• leads de hoy / de esta semana\n"
+    "• respondieron vs no respondieron (envío masivo)\n\n"
+    "Ventas cerradas, pendientes de llamar y desglose por producto: "
+    "no tengo ese dato todavía en el sistema."
+)
+
+
+async def _generar_reporte_dueño(texto_lower: str) -> str:
+    """
+    Clasifica la pregunta del dueño por palabra clave (Parte 1: reportes de
+    solo lectura) y devuelve la respuesta calculada con datos reales.
+
+    Regla estricta: si la pregunta cae en un caso donde no hay un dato
+    confiable hoy en la BD, responde exactamente "no tengo ese dato
+    todavía" — nunca estima ni aproxima.
+    """
+    # Ventas cerradas -> el estado 'cerrado' nunca se usa para leads de
+    # telecom (el bot solo llega hasta listo_para_cierre); el cierre real
+    # lo hace un humano por teléfono y no queda registrado en el sistema.
+    if _keyword_match(texto_lower, ["venta", "ventas"]) and \
+       _keyword_match(texto_lower, ["cerrada", "cerradas", "cerrado", "cerrados"]):
+        return "no tengo ese dato todavía"
+
+    # Pendientes de llamar -> no existe ningún campo de "llamar en tal fecha"
+    if _keyword_match(texto_lower, ["llamar"]):
+        return "no tengo ese dato todavía"
+
+    # Desglose por producto -> subproducto nunca tiene estos valores, y
+    # lead_resumen (única fuente alternativa) cubre una muestra demasiado
+    # chica para presentarla como un desglose real.
+    if _keyword_match(texto_lower, ["directv", "vtr", "movistar", "claro"]) or \
+       (_keyword_match(texto_lower, ["desglose"]) and _keyword_match(texto_lower, ["producto", "productos"])):
+        return "no tengo ese dato todavía"
+
+    # Respondieron vs no respondieron -> acotado a envío masivo (ver docstring
+    # de contar_respondieron_envio_masivo en crm.py)
+    if _keyword_match(texto_lower, ["respondieron"]):
+        datos = await crm.contar_respondieron_envio_masivo()
+        return (
+            f"De los {datos['total']} contactos de envío masivo: "
+            f"{datos['respondieron']} respondieron, "
+            f"{datos['no_respondieron']} no respondieron."
+        )
+
+    # Leads/clientes ingresados hoy o esta semana
+    contiene_conteo = _keyword_match(texto_lower, ["lead", "leads", "cliente", "clientes"])
+    contiene_semana = _keyword_match(texto_lower, ["semana"])
+    contiene_hoy    = _keyword_match(texto_lower, ["hoy"])
+    if contiene_conteo and (contiene_semana or contiene_hoy):
+        ahora = datetime.utcnow()
+        if contiene_semana:
+            desde = (ahora - timedelta(days=ahora.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            n = await crm.contar_leads_creados_desde(desde)
+            return f"{n} leads ingresaron esta semana."
+        else:
+            desde = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
+            n = await crm.contar_leads_creados_desde(desde)
+            return f"{n} leads ingresaron hoy."
+
+    return _MENU_DUEÑO
+
+
+# ── Parte 2 — cargar ventas/leads con confirmación explícita ──────────────
+
+# Propuesta pendiente por número de dueño, en memoria (se pierde si Railway
+# redespliega entre la propuesta y la confirmación — limitación conocida).
+_CARGA_PENDIENTE: dict[str, dict] = {}
+
+_PALABRAS_CONFIRMACION = {"si", "sí", "confirmar", "confirmo", "dale", "ok", "okay", "correcto"}
+_PALABRAS_CANCELACION = {"no", "cancelar", "cancela", "cancelalo", "cancélalo"}
+
+_ETIQUETAS_CAMPOS = {
+    "telefono": "el teléfono",
+    "nombre": "el nombre",
+    "producto": "el producto/compañía",
+    "comuna": "la comuna",
+    "direccion": "la dirección",
+}
+
+_HERRAMIENTA_CARGA_DUEÑO = {
+    "name": "registrar_carga",
+    "description": (
+        "Extrae los datos de una venta cerrada o un lead nuevo que el dueño "
+        "quiere cargar manualmente al CRM de Conexión Sin Límites."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "tipo": {
+                "type": "string",
+                "enum": ["venta", "lead_nuevo"],
+                "description": "'venta' si el dueño dice que ya se cerró/vendió; 'lead_nuevo' si es un contacto nuevo sin cerrar todavía.",
+            },
+            "nombre": {"type": "string", "description": "Nombre del cliente, si se menciona."},
+            "telefono": {"type": "string", "description": "Teléfono del cliente, solo dígitos, con código de país (ej. 56912345678)."},
+            "producto": {
+                "type": "string",
+                "enum": ["DirecTV", "VTR", "Movistar", "Claro", "Entel", "WOM", "otro"],
+                "description": "Compañía/producto mencionado, si se menciona.",
+            },
+            "comuna": {"type": "string"},
+            "direccion": {"type": "string"},
+            "campos_faltantes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Nombres de campos importantes que el dueño todavía no mencionó (ej. ['telefono']). telefono y nombre siempre son importantes; producto es importante solo si tipo=venta.",
+            },
+            "listo_para_confirmar": {
+                "type": "boolean",
+                "description": "true solo si ya no faltan campos importantes.",
+            },
+        },
+        "required": ["tipo", "campos_faltantes", "listo_para_confirmar"],
+    },
+}
+
+
+async def _extraer_carga_dueño(mensaje_nuevo: str, datos_previos: dict | None) -> dict:
+    """
+    Llama a Claude para extraer/actualizar los datos de una carga de venta o
+    lead nuevo pedida por el dueño. Nunca inventa datos que el dueño no
+    mencionó — los deja fuera y los reporta en campos_faltantes.
+    """
+    contexto = ""
+    if datos_previos:
+        contexto = (
+            "Datos ya recopilados hasta ahora en esta misma carga (el dueño "
+            "puede estar completando lo que falta o corrigiendo algo):\n"
+            f"{json.dumps(datos_previos, ensure_ascii=False)}\n\n"
+        )
+
+    respuesta = await claude_client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=512,
+        system=(
+            "Extraes datos estructurados de mensajes del dueño de Conexión Sin "
+            "Límites, que está cargando manualmente una venta cerrada o un lead "
+            "nuevo al CRM por WhatsApp. Usa SIEMPRE la herramienta registrar_carga. "
+            "NUNCA inventes ni asumas datos que el dueño no mencionó explícitamente."
+        ),
+        tools=[_HERRAMIENTA_CARGA_DUEÑO],
+        tool_choice={"type": "tool", "name": "registrar_carga"},
+        messages=[{"role": "user", "content": contexto + mensaje_nuevo}],
+    )
+
+    for bloque in respuesta.content:
+        if bloque.type == "tool_use":
+            return bloque.input
+    raise RuntimeError("Claude no devolvió la herramienta registrar_carga")
+
+
+def _validar_campos_obligatorios(datos: dict) -> list[str]:
+    """Red de seguridad en Python — no confía solo en el criterio de la IA."""
+    faltantes = list(datos.get("campos_faltantes") or [])
+    if not datos.get("telefono") and "telefono" not in faltantes:
+        faltantes.append("telefono")
+    if not datos.get("nombre") and "nombre" not in faltantes:
+        faltantes.append("nombre")
+    if datos.get("tipo") == "venta" and not datos.get("producto") and "producto" not in faltantes:
+        faltantes.append("producto")
+    return faltantes
+
+
+def _texto_confirmacion_carga(datos: dict) -> str:
+    tipo_label = "Venta cerrada" if datos.get("tipo") == "venta" else "Lead nuevo"
+    lineas = ["Voy a cargar esto — ¿confirmas?", "", f"Tipo: {tipo_label}"]
+    if datos.get("nombre"):
+        lineas.append(f"Nombre: {datos['nombre']}")
+    if datos.get("telefono"):
+        lineas.append(f"Teléfono: {datos['telefono']}")
+    if datos.get("producto"):
+        lineas.append(f"Producto: {datos['producto']}")
+    if datos.get("comuna"):
+        lineas.append(f"Comuna: {datos['comuna']}")
+    if datos.get("direccion"):
+        lineas.append(f"Dirección: {datos['direccion']}")
+    lineas.append("")
+    lineas.append('Responde "sí" para guardar, o "no" para cancelar.')
+    return "\n".join(lineas)
+
+
+def _texto_pregunta_faltantes(datos: dict, faltantes: list[str]) -> str:
+    pedir = ", ".join(_ETIQUETAS_CAMPOS.get(f, f) for f in faltantes)
+    conocido = [
+        f"{k}: {v}" for k, v in datos.items()
+        if k not in ("campos_faltantes", "listo_para_confirmar", "tipo") and v
+    ]
+    resumen = ("Hasta ahora tengo: " + ", ".join(conocido) + ".\n\n") if conocido else ""
+    return f"{resumen}Me falta {pedir}. ¿Me lo pasas?"
+
+
+async def _ejecutar_carga_dueño(datos: dict) -> str:
+    """Escribe la carga confirmada en la BD. Solo se llama tras un 'sí' explícito."""
+    telefono = (datos.get("telefono") or "").replace("+", "").replace(" ", "").replace("-", "")
+    nombre = datos.get("nombre")
+    producto = datos.get("producto")
+
+    kwargs: dict = {"origen": "carga_manual"}
+    if datos.get("comuna"):
+        kwargs["comuna"] = datos["comuna"]
+    if datos.get("direccion"):
+        kwargs["direccion"] = datos["direccion"]
+    if producto:
+        kwargs["subproducto"] = producto
+    if datos.get("tipo") == "venta":
+        kwargs["estado"] = "cerrado"
+        kwargs["score"] = 100
+    # Si es lead_nuevo, no se toca 'estado': un lead ya existente conserva su
+    # progreso real (no lo bajamos a 'nuevo' solo porque se recargó a mano).
+
+    ya_existia = (await crm.obtener_lead(telefono)) is not None
+    await crm.crear_o_actualizar_lead(telefono, nombre=nombre, **kwargs)
+
+    accion = "actualicé el lead existente" if ya_existia else "creé un lead nuevo"
+    return f"Listo, {accion} para {nombre or telefono} ✅"
+
+
+async def _procesar_mensaje_dueño(telefono: str, texto: str):
     """
     Modo dueño — mensajes desde cualquiera de los dos números del dueño
     (56974394322, 56978016298) se enrutan aquí, sin distinción de producto.
-    Por ahora es un stub: solo confirma que el enrutamiento llega hasta acá.
-    Las consultas reales (ficha puntual, reporte DirecTV/VTR, total
-    general) se construyen en un paso posterior.
+    Parte 1: reportes de solo lectura. Parte 2: cargar ventas/leads con
+    confirmación explícita antes de escribir en la BD.
     """
+    texto_original = (texto or "").strip()
+    texto_lower = texto_original.lower()
+
     try:
-        enviado = await proveedor.enviar_mensaje(telefono, "Modo dueño activado, en construcción 🛠️")
+        pendiente = _CARGA_PENDIENTE.get(telefono)
+
+        if pendiente and texto_lower in _PALABRAS_CONFIRMACION:
+            respuesta = await _ejecutar_carga_dueño(pendiente["datos"])
+            del _CARGA_PENDIENTE[telefono]
+
+        elif pendiente and texto_lower in _PALABRAS_CANCELACION:
+            del _CARGA_PENDIENTE[telefono]
+            respuesta = "Cancelado, no se guardó nada."
+
+        elif pendiente or _keyword_match(texto_lower, ["carga", "cargar"]):
+            datos = await _extraer_carga_dueño(
+                texto_original, pendiente["datos"] if pendiente else None
+            )
+            faltantes = _validar_campos_obligatorios(datos)
+            _CARGA_PENDIENTE[telefono] = {"datos": datos}
+            if faltantes:
+                respuesta = _texto_pregunta_faltantes(datos, faltantes)
+            else:
+                respuesta = _texto_confirmacion_carga(datos)
+
+        else:
+            respuesta = await _generar_reporte_dueño(texto_lower)
+
+    except Exception as e:
+        _log("ERROR", f"Modo dueño: error procesando mensaje de {telefono}: {e}")
+        respuesta = "Tuve un problema procesando eso. Intenta de nuevo en un momento."
+
+    try:
+        enviado = await proveedor.enviar_mensaje(telefono, respuesta)
         if enviado:
-            _log("INFO", f"Modo dueño: respuesta stub enviada a {telefono}")
+            _log("INFO", f"Modo dueño: respuesta enviada a {telefono}")
         else:
             _log("ERROR", f"Modo dueño: falló el envío a {telefono}")
     except Exception as e:
-        _log("ERROR", f"Modo dueño: error procesando mensaje de {telefono}: {e}")
+        _log("ERROR", f"Modo dueño: error enviando respuesta a {telefono}: {e}")
 
 
 async def _enviar_alerta_supervisor(datos: dict, telefono_cliente: str):

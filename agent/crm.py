@@ -253,7 +253,7 @@ async def crear_o_actualizar_lead(telefono: str, nombre: str = None, **kwargs):
                 allowed = {
                     "estado", "score", "direccion", "comuna",
                     "subproducto", "notas", "proxima_accion",
-                    "proximo_followup", "agente"
+                    "proximo_followup", "agente", "origen"
                 }
                 for key, value in kwargs.items():
                     if key in allowed:
@@ -799,6 +799,44 @@ async def obtener_estadisticas() -> dict:
             "leads_cerrados":   leads_cerrados,
             "por_estado":       {r["estado"]: r["total"] for r in rows},
         }
+
+
+# ═══════════════════════════════════════
+# MODO DUEÑO — REPORTES DE SOLO LECTURA
+# ═══════════════════════════════════════
+
+async def contar_leads_creados_desde(desde: datetime) -> int:
+    """Cuenta leads con created_at >= desde. Usado por el modo dueño."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM leads WHERE created_at >= $1", desde
+        )
+
+
+async def contar_respondieron_envio_masivo() -> dict:
+    """
+    Cuenta cuántos leads de origen='envio_masivo' tienen al menos un
+    mensaje de usuario en historial_mensajes (respondieron) vs los que no.
+    Usado por el modo dueño. Se limita a envío masivo porque los leads con
+    origen='whatsapp' incluyen registros importados sin conversación real
+    — mezclarlos daría un número que no refleja lo que se está preguntando.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        fila = await conn.fetchrow("""
+            SELECT
+              COUNT(*) FILTER (WHERE h.n_user > 0)                AS respondieron,
+              COUNT(*) FILTER (WHERE h.n_user IS NULL OR h.n_user = 0) AS no_respondieron,
+              COUNT(*)                                             AS total
+            FROM leads l
+            LEFT JOIN (
+              SELECT telefono, COUNT(*) FILTER (WHERE rol = 'user') AS n_user
+              FROM historial_mensajes GROUP BY telefono
+            ) h ON h.telefono = l.telefono
+            WHERE l.origen = 'envio_masivo'
+        """)
+        return dict(fila)
 
 
 # ═══════════════════════════════════════

@@ -197,8 +197,12 @@ async def webhook_handler(request: Request):
             _log("INFO", f"Mensaje ignorado — es_propio={msg.es_propio} texto='{msg.texto}'")
             continue
 
-        if msg.telefono in ("56978016298", "56941762315"):
+        if msg.telefono == "56941762315":
             _log("INFO", f"Mensaje del supervisor ignorado — {msg.telefono}")
+            continue
+
+        if msg.telefono in ("56974394322", "56978016298"):
+            await _procesar_mensaje_dueño(msg.telefono)
             continue
 
         # Si es audio, transcribirlo antes de procesar
@@ -490,6 +494,24 @@ async def _enviar_notificacion_caliente(telefono_cliente: str):
             _log("ERROR", f"Notif. lead caliente falló para {tel}")
     except Exception as e:
         _log("ERROR", f"Error notificando lead caliente: {e}")
+
+
+async def _procesar_mensaje_dueño(telefono: str):
+    """
+    Modo dueño — mensajes desde cualquiera de los dos números del dueño
+    (56974394322, 56978016298) se enrutan aquí, sin distinción de producto.
+    Por ahora es un stub: solo confirma que el enrutamiento llega hasta acá.
+    Las consultas reales (ficha puntual, reporte DirecTV/VTR, total
+    general) se construyen en un paso posterior.
+    """
+    try:
+        enviado = await proveedor.enviar_mensaje(telefono, "Modo dueño activado, en construcción 🛠️")
+        if enviado:
+            _log("INFO", f"Modo dueño: respuesta stub enviada a {telefono}")
+        else:
+            _log("ERROR", f"Modo dueño: falló el envío a {telefono}")
+    except Exception as e:
+        _log("ERROR", f"Modo dueño: error procesando mensaje de {telefono}: {e}")
 
 
 async def _enviar_alerta_supervisor(datos: dict, telefono_cliente: str):

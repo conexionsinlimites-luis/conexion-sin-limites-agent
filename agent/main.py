@@ -30,6 +30,10 @@ from agent.campanas import inicializar_campanas
 
 # Número del supervisor comercial que recibe alertas (mismo que TELEFONO_OWNER)
 TELEFONO_SUPERVISOR = TELEFONO_OWNER
+
+# Ruteo de alertas "Lead Listo" por producto detectado (ver _clasificar_producto_lead)
+TELEFONO_ALERTA_DIRECTV = "56974394322"
+TELEFONO_ALERTA_VTR_MOVISTAR = "56978016298"
 _notificaciones_enviadas: dict = {}
 
 # Slug del cliente activo — usado por prompt_builder para cargar config_json
@@ -51,6 +55,28 @@ def _keyword_match(texto_lower: str, keywords: list[str]) -> bool:
         elif re.search(rf"\b{re.escape(kw)}\b", texto_lower):
             return True
     return False
+
+
+def _clasificar_producto_lead(lead: dict | None, historial: list[dict]) -> str:
+    """
+    Clasifica el producto de un lead para rutear la alerta "Lead Listo",
+    buscando menciones de compañía en el resumen del lead y en el historial
+    de conversación (coincidencia de palabra completa). No modifica el campo
+    `subproducto` en la BD — solo decide a qué número mandar la alerta.
+
+    Returns: "directv", "vtr_movistar", u "otro".
+    """
+    texto = " ".join([
+        (lead.get("lead_resumen") or "") if lead else "",
+        (lead.get("subproducto") or "") if lead else "",
+        *(m.get("mensaje", "") for m in historial),
+    ]).lower()
+
+    if re.search(r"\bdirectv\b", texto):
+        return "directv"
+    if re.search(r"\bvtr\b", texto) or re.search(r"\bmovistar\b", texto):
+        return "vtr_movistar"
+    return "otro"
 
 # Configuración de logging según entorno
 log_level = logging.DEBUG if ENVIRONMENT == "development" else logging.INFO
@@ -490,6 +516,16 @@ async def _enviar_alerta_supervisor(datos: dict, telefono_cliente: str):
         producto = "Telecom"
         resumen  = "—"
 
+    # Clasificar producto para decidir a qué número enviar la alerta
+    historial = await crm.obtener_historial(telefono_cliente, limite=30)
+    clasificacion = _clasificar_producto_lead(lead, historial)
+    if clasificacion == "directv":
+        destino = TELEFONO_ALERTA_DIRECTV
+    elif clasificacion == "vtr_movistar":
+        destino = TELEFONO_ALERTA_VTR_MOVISTAR
+    else:
+        destino = TELEFONO_SUPERVISOR
+
     # Dirección desde el marcador; si el CRM ya la tiene, usar la más completa
     if not dir_ or dir_ == "pendiente":
         dir_ = lead.get("direccion") or "pendiente" if lead else "pendiente"
@@ -511,9 +547,9 @@ async def _enviar_alerta_supervisor(datos: dict, telefono_cliente: str):
     )
 
     try:
-        enviado = await proveedor.enviar_mensaje(TELEFONO_SUPERVISOR, mensaje)
+        enviado = await proveedor.enviar_mensaje(destino, mensaje)
         if enviado:
-            _log("INFO", f"Alerta supervisor enviada — {nombre} ({tel})")
+            _log("INFO", f"Alerta supervisor enviada — {nombre} ({tel}) -> {destino} [{clasificacion}]")
         else:
             _log("ERROR", f"Alerta supervisor falló para {tel} — revisar credenciales")
     except Exception as e:

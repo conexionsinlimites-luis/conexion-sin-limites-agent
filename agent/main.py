@@ -35,6 +35,23 @@ _notificaciones_enviadas: dict = {}
 # Slug del cliente activo — usado por prompt_builder para cargar config_json
 CLIENTE_SLUG = "csl"
 
+
+def _keyword_match(texto_lower: str, keywords: list[str]) -> bool:
+    """
+    Coincidencia de palabra completa para keywords de una sola palabra (evita
+    falsos positivos por substring, ej. "curso" dentro de "concurso"/"recurso"/
+    "transcurso", o "conserva" dentro de "conservar"). Las frases de varias
+    palabras usan substring simple, ya que la coincidencia accidental de una
+    frase completa es mucho menos probable.
+    """
+    for kw in keywords:
+        if " " in kw:
+            if kw in texto_lower:
+                return True
+        elif re.search(rf"\b{re.escape(kw)}\b", texto_lower):
+            return True
+    return False
+
 # Configuración de logging según entorno
 log_level = logging.DEBUG if ENVIRONMENT == "development" else logging.INFO
 logging.basicConfig(level=log_level)
@@ -258,13 +275,14 @@ async def webhook_handler(request: Request):
             )
 
             # Detectar si el mensaje es sobre productos Hotmart → usar Constanza
+            # (coincidencia de palabra completa — ver _keyword_match arriba)
             KEYWORDS_CONSTANZA = [
-                "canva", "conserva", "envasar", "curso", "pdf", "hotmart",
+                "canva", "conservas", "envasar", "curso", "pdf", "hotmart",
                 "emprender", "negocio desde casa", "salsas", "recetas",
-                "diseño", "diseño grafico", "arte de envasar", "mrr"
+                "diseño grafico", "arte de envasar", "mrr"
             ]
             texto_lower = msg.texto.lower()
-            slug_activo = "constanza" if any(k in texto_lower for k in KEYWORDS_CONSTANZA) else CLIENTE_SLUG
+            slug_activo = "constanza" if _keyword_match(texto_lower, KEYWORDS_CONSTANZA) else CLIENTE_SLUG
             cliente_id_activo = cliente_id
             if slug_activo == "constanza":
                 cliente_id_activo = 5

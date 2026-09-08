@@ -365,8 +365,10 @@ async def webhook_handler(request: Request):
                     _log("ERROR", f"Error programando follow-up: {_fe}")
 
             # Enviar alerta al supervisor y marcar lead como listo para cierre
+            alerta_ya_enviada = False
             if alerta:
                 await _enviar_alerta_supervisor(alerta, msg.telefono)
+                alerta_ya_enviada = True
                 await crm.actualizar_estado(msg.telefono, "listo_para_cierre")
                 dir_ = alerta.get("dir", "")
                 if dir_ and dir_ != "pendiente":
@@ -374,8 +376,9 @@ async def webhook_handler(request: Request):
                 _log("INFO", f"Lead {msg.telefono} marcado como listo_para_cierre en CRM")
 
             # Extraer dirección del 📍 en la respuesta de Valentina y notificar supervisor
-            m_dir = re.search(r'📍\s*([^\n]+)', respuesta_limpia)
-            if m_dir:
+            # ([ \t]* en vez de \s*: no debe cruzar saltos de línea, o "captura" el párrafo siguiente)
+            m_dir = re.search(r'📍[ \t]*([^\n]+)', respuesta_limpia)
+            if m_dir and not alerta_ya_enviada:
                 dir_extraida = m_dir.group(1).strip()
                 if len(dir_extraida) > 5 and dir_extraida.lower() not in ("pendiente", "por confirmar"):
                     await crm.crear_o_actualizar_lead(msg.telefono, direccion=dir_extraida)

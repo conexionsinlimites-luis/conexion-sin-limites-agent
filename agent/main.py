@@ -20,6 +20,7 @@ from fastapi.responses import PlainTextResponse
 from agent.brain import generar_respuesta, client as claude_client
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
 from agent.providers import obtener_proveedor
+import agent.prompt_builder as prompt_builder
 from agent.transcriber import transcribir
 from agent.config import PORT, ENVIRONMENT, TELEFONO_OWNER, MAKE_WEBHOOK_TOKEN
 import agent.crm as crm
@@ -718,12 +719,46 @@ async def _ejecutar_carga_dueño(datos: dict) -> str:
     return f"Listo, {accion} para {nombre or telefono} ✅"
 
 
+# ── Parte 3 — modo de producto activo (global, persiste en BD) ────────────
+
+_KEYWORDS_MODO_TODOS = [
+    "responde todo", "responde todos", "modo normal", "sin restriccion",
+    "sin restricción", "todas las companias", "todas las compañías",
+    "todos los productos", "vuelve a todos", "quita la restriccion",
+    "quita la restricción", "levanta la restriccion", "levanta la restricción",
+]
+_KEYWORDS_SOLO = ["solo", "sólo", "unicamente", "únicamente"]
+_KEYWORDS_DTV = ["dtv", "directv"]
+_KEYWORDS_VTR_MOVISTAR = ["vtr", "movistar"]
+
+
+def _detectar_cambio_modo_producto(texto_lower: str) -> str | None:
+    """
+    Detecta si el dueño está pidiendo cambiar el modo de producto activo.
+    Retorna "todos", "directv", "vtr_movistar", o None si no aplica.
+    """
+    if _keyword_match(texto_lower, _KEYWORDS_MODO_TODOS):
+        return "todos"
+
+    tiene_solo = _keyword_match(texto_lower, _KEYWORDS_SOLO)
+    if not tiene_solo:
+        return None
+
+    if _keyword_match(texto_lower, _KEYWORDS_DTV):
+        return "directv"
+    if _keyword_match(texto_lower, _KEYWORDS_VTR_MOVISTAR):
+        return "vtr_movistar"
+    return None
+
+
 async def _procesar_mensaje_dueño(telefono: str, texto: str):
     """
     Modo dueño — mensajes desde cualquiera de los dos números del dueño
     (56974394322, 56978016298) se enrutan aquí, sin distinción de producto.
     Parte 1: reportes de solo lectura. Parte 2: cargar ventas/leads con
-    confirmación explícita antes de escribir en la BD.
+    confirmación explícita antes de escribir en la BD. Parte 3: cambiar el
+    modo de producto activo (qué compañías puede ofrecer Valentina a TODOS
+    los clientes, globalmente, hasta que el dueño lo cambie de nuevo).
     """
     texto_original = (texto or "").strip()
     texto_lower = texto_original.lower()
@@ -731,7 +766,15 @@ async def _procesar_mensaje_dueño(telefono: str, texto: str):
     try:
         pendiente = _CARGA_PENDIENTE.get(telefono)
 
-        if pendiente and texto_lower in _PALABRAS_CONFIRMACION:
+        # Modo producto tiene prioridad, salvo que haya una carga en curso
+        # (para no confundir texto de la carga con un cambio de modo).
+        modo_nuevo = None if pendiente else _detectar_cambio_modo_producto(texto_lower)
+
+        if modo_nuevo:
+            await prompt_builder.actualizar_modo_producto(modo_nuevo, cliente_slug=CLIENTE_SLUG)
+            respuesta = f"Listo, modo de producto activo: {prompt_builder.NOMBRE_MODO[modo_nuevo]} ✅"
+
+        elif pendiente and texto_lower in _PALABRAS_CONFIRMACION:
             respuesta = await _ejecutar_carga_dueño(pendiente["datos"])
             del _CARGA_PENDIENTE[telefono]
 

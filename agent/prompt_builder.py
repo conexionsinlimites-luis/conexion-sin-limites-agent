@@ -160,6 +160,95 @@ def invalidar_cache(cliente_slug: str = "", cliente_id: int | None = None):
         logger.info(f"prompt_builder: cache invalidado (id={cliente_id}, slug={cliente_slug!r})")
 
 
+# ── Modo de producto activo (modo dueño) ───────────────────────
+#
+# Guardado dentro de clientes.config_json (clave "modo_producto") para
+# reutilizar la misma persistencia en Postgres (sobrevive redeploy) y el
+# mismo cache/invalidación que el resto de la config del cliente.
+
+TODAS_LAS_COMPANIAS = ["DirecTV", "VTR", "Movistar", "Claro", "Entel", "WOM"]
+
+_COMPANIAS_POR_MODO = {
+    "directv": ["DirecTV"],
+    "vtr_movistar": ["VTR", "Movistar"],
+}
+
+NOMBRE_MODO = {
+    "todos": "todos los productos",
+    "directv": "DirecTV",
+    "vtr_movistar": "VTR y Movistar",
+}
+
+
+async def obtener_modo_producto(cliente_slug: str = "csl") -> str:
+    """Lee el modo de producto activo desde config_json. Default: 'todos'."""
+    config = await _consultar_config_bd(cliente_slug)
+    return (config.get("modo_producto") or "todos").strip().lower()
+
+
+async def actualizar_modo_producto(modo: str, cliente_slug: str = "csl") -> None:
+    """
+    Escribe el modo de producto activo en config_json (read-modify-write,
+    preserva el resto de las claves) e invalida el cache para que aplique
+    de inmediato en el siguiente mensaje de cualquier cliente.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        fila = await conn.fetchrow(
+            "SELECT id, config_json FROM clientes WHERE slug = $1",
+            cliente_slug,
+        )
+        if not fila:
+            raise ValueError(f"Cliente con slug={cliente_slug!r} no encontrado")
+
+        raw = fila["config_json"]
+        if isinstance(raw, str):
+            config = json.loads(raw) if raw else {}
+        else:
+            config = dict(raw) if raw else {}
+
+        config["modo_producto"] = modo
+
+        await conn.execute(
+            "UPDATE clientes SET config_json = $1 WHERE id = $2",
+            json.dumps(config, ensure_ascii=False),
+            fila["id"],
+        )
+
+    invalidar_cache(cliente_slug=cliente_slug)
+    logger.info(f"prompt_builder: modo_producto actualizado a {modo!r} (slug={cliente_slug!r})")
+
+
+def _bloque_modo_producto(config: dict) -> str:
+    """
+    Genera el bloque de instrucción que restringe qué compañías puede
+    ofrecer/mencionar Valentina. Vacío si el modo activo es "todos".
+    """
+    modo = (config.get("modo_producto") or "todos").strip().lower()
+    activas = _COMPANIAS_POR_MODO.get(modo)
+    if not activas:
+        return ""
+
+    excluidas = [c for c in TODAS_LAS_COMPANIAS if c not in activas]
+    activas_txt = " y ".join(activas)
+
+    return (
+        "\n\n─────────────────────────────────────────────\n"
+        "MODO DE PRODUCTO ACTIVO (configurado por el dueño)\n"
+        f"Por ahora SOLO puedes ofrecer, mencionar o comparar: {activas_txt}.\n"
+        "NO menciones, ofrezcas ni compares estas compañías, aunque el "
+        f"cliente pregunte directamente por ellas: {', '.join(excluidas)}.\n"
+        "Si el cliente pregunta por una compañía excluida, NO inventes "
+        "ninguna razón (no digas que no hay stock, cobertura, problema "
+        "técnico, etc.) — solo redirige de forma natural, por ejemplo:\n"
+        f'"Por ahora estamos enfocados en {activas_txt}, pero te puedo '
+        'ayudar con esa opción 😊"\n'
+        "Puedes variar el tono y las palabras, pero mantén siempre la misma "
+        f"idea: seguimos enfocados en {activas_txt} por el momento.\n"
+        "─────────────────────────────────────────────"
+    )
+
+
 # ── Bloque de contexto del lead (siempre fresco) ──────────────
 
 def _estado_inline(lead: dict) -> str:
@@ -365,6 +454,7 @@ async def construir_prompt(
                 supervisor_inst = config.get("supervisor_instruccion", "")
                 if supervisor_inst:
                     prompt += f"\n\nSUPERVISOR: {supervisor_inst}"
+                prompt += _bloque_modo_producto(config)
                 prompt += _seccion_estado_lead(lead, estado, resumen)
                 logger.debug(
                     f"prompt_builder: Ruta A — template+config_json "
@@ -393,6 +483,7 @@ async def construir_prompt(
     ).strip()
 
     # Agregar bloque de contexto del lead al final del YAML
+    base += _bloque_modo_producto(config)
     base += _seccion_estado_lead(lead, estado, resumen)
     return base
 

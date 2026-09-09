@@ -332,8 +332,11 @@ async def webhook_handler(request: Request):
             )
             _log("INFO", f"Respuesta generada: '{respuesta[:100]}'")
 
+            # Detectar marcador de duda (Valentina prometió revisar algo con el ejecutivo)
+            respuesta_sin_duda, duda_pregunta = _extraer_alerta_duda(respuesta)
+
             # Detectar marcador de alerta al supervisor y procesarlo antes de enviar al cliente
-            respuesta_limpia, alerta = _extraer_alerta(respuesta)
+            respuesta_limpia, alerta = _extraer_alerta(respuesta_sin_duda)
 
             # Guardar en memoria conversacional y en historial CRM
             await guardar_mensaje(msg.telefono, "user", msg.texto)
@@ -360,6 +363,10 @@ async def webhook_handler(request: Request):
                 _log("INFO", f"Respuesta enviada OK a {msg.telefono}")
             else:
                 _log("ERROR", f"enviar_mensaje falló para {msg.telefono} — revisar token/credenciales en Railway")
+
+            # Valentina prometió revisar algo con el ejecutivo — avisarle de verdad
+            if duda_pregunta:
+                await _enviar_alerta_duda(msg.telefono, duda_pregunta)
 
             # Programar follow-up automático: si el cliente no responde en 2h, Valentina lo recordará
             # La cadena completa es 2h → 24h → 3d → 30d → 60d (cada uno se encadena en scheduler.py)
@@ -461,6 +468,23 @@ def _extraer_alerta(respuesta: str) -> tuple[str, dict | None]:
     return limpia, datos
 
 
+def _extraer_alerta_duda(respuesta: str) -> tuple[str, str | None]:
+    """
+    Detecta el marcador [ALERTA_DUDA|pregunta=...] que Valentina agrega
+    cuando le dice al cliente que va a revisar algo con el ejecutivo (ver
+    "Cuándo derivar al ejecutivo humano" en config/comportamiento.md).
+    Se extrae ANTES de pasar por _extraer_alerta, cuyo patron_marcador
+    genérico también lo limpiaría del texto pero sin capturar la pregunta.
+    """
+    patron = r'\[ALERTA_DUDA\|pregunta=([^\]]*)\]'
+    m = re.search(patron, respuesta)
+    if not m:
+        return respuesta, None
+    pregunta = m.group(1).strip()
+    limpia = re.sub(patron, "", respuesta).strip()
+    return limpia, (pregunta or None)
+
+
 async def _enviar_notificacion_caliente(telefono_cliente: str):
     """Avisa al supervisor por WhatsApp cuando un lead se vuelve caliente."""
     lead = await crm.obtener_lead(telefono_cliente)
@@ -496,6 +520,37 @@ async def _enviar_notificacion_caliente(telefono_cliente: str):
             _log("ERROR", f"Notif. lead caliente falló para {tel}")
     except Exception as e:
         _log("ERROR", f"Error notificando lead caliente: {e}")
+
+
+async def _enviar_alerta_duda(telefono_cliente: str, pregunta: str):
+    """
+    Avisa al supervisor por WhatsApp cuando Valentina le dijo al cliente
+    que iba a revisar algo con el ejecutivo (marcador [ALERTA_DUDA]).
+    Sin esta notificación real, esa promesa quedaría vacía.
+    """
+    lead    = await crm.obtener_lead(telefono_cliente)
+    nombre  = (lead.get("nombre") if lead else "") or "Cliente"
+    tel     = telefono_cliente.replace("+", "").replace(" ", "").split("@")[0]
+    wa_link = f"https://wa.me/{tel}"
+
+    mensaje = (
+        f"❓ *DUDA SIN RESOLVER — VALENTINA*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 *{nombre}*\n"
+        f"📱 +{tel}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"❓ {pregunta}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💬 {wa_link}"
+    )
+    try:
+        enviado = await proveedor.enviar_mensaje(TELEFONO_SUPERVISOR, mensaje)
+        if enviado:
+            _log("INFO", f"Alerta de duda enviada al supervisor — {nombre} ({tel}): {pregunta[:60]}")
+        else:
+            _log("ERROR", f"Alerta de duda falló para {tel}")
+    except Exception as e:
+        _log("ERROR", f"Error enviando alerta de duda: {e}")
 
 
 _MENU_DUEÑO = (

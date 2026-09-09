@@ -67,7 +67,7 @@ def _cargar_prompt_base_txt() -> str:
     """
     Lee config/prompt_base.txt — template con placeholders:
     {agente_nombre}, {tono}, {catalogo}, {objeciones}, {cierres},
-    {estado}, {resumen}.
+    {comportamiento}, {estado}, {resumen}.
     Retorna None si no existe.
     """
     try:
@@ -77,6 +77,23 @@ def _cargar_prompt_base_txt() -> str:
         import os
         logger.warning(f"prompt_builder: config/prompt_base.txt no encontrado — cwd={os.getcwd()}")
         return None
+
+
+def _cargar_comportamiento() -> str:
+    """
+    Lee config/comportamiento.md — metodología de venta y comportamiento
+    de Valentina (identidad, ética, tipos de cliente, objeciones, cierres,
+    técnicas de persuasión). Es un archivo estático versionado en el repo,
+    NO específico de cliente ni de producto (precios/catálogo viven en
+    clientes.config_json). Retorna "" si no existe, para no romper el
+    prompt si falta el archivo.
+    """
+    try:
+        with open("config/comportamiento.md", "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        logger.warning("prompt_builder: config/comportamiento.md no encontrado")
+        return ""
 
 
 # ── Cache y acceso a config_json del cliente ──────────────────
@@ -442,13 +459,14 @@ async def construir_prompt(
         if template:
             try:
                 prompt = template.format(
-                    agente_nombre = config.get("nombre_agente", "Valentina"),
-                    tono          = config.get("tono", "cercano, vendedor, seguro, humano"),
-                    catalogo      = config["catalogo"].strip(),
-                    objeciones    = config["objeciones"].strip(),
-                    cierres       = config["cierres"].strip(),
-                    estado        = _estado_inline(lead) if lead else f"Estado: {estado.upper()}",
-                    resumen       = resumen or "(sin resumen disponible aún)",
+                    agente_nombre  = config.get("nombre_agente", "Valentina"),
+                    tono           = config.get("tono", "cercano, vendedor, seguro, humano"),
+                    catalogo       = config["catalogo"].strip(),
+                    objeciones     = config["objeciones"].strip(),
+                    cierres        = config["cierres"].strip(),
+                    comportamiento = _cargar_comportamiento(),
+                    estado         = _estado_inline(lead) if lead else f"Estado: {estado.upper()}",
+                    resumen        = resumen or "(sin resumen disponible aún)",
                 )
                 # Agregar bloque completo de contexto al final
                 supervisor_inst = config.get("supervisor_instruccion", "")
@@ -482,7 +500,10 @@ async def construir_prompt(
         "Eres un asistente útil de ventas. Responde en español.",
     ).strip()
 
-    # Agregar bloque de contexto del lead al final del YAML
+    # Agregar comportamiento/metodología y bloque de contexto del lead al final del YAML
+    comportamiento = _cargar_comportamiento()
+    if comportamiento:
+        base += f"\n\n{comportamiento}"
     base += _bloque_modo_producto(config)
     base += _seccion_estado_lead(lead, estado, resumen)
     return base

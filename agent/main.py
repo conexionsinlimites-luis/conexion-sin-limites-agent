@@ -8,6 +8,7 @@ Funciona con cualquier proveedor (Whapi, Meta, Twilio) gracias a la capa de prov
 
 import re
 import json
+import yaml
 import asyncio
 import logging
 import traceback
@@ -665,6 +666,29 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
         },
     },
     {
+        "name": "consultar_catalogo",
+        "description": (
+            "Responde preguntas sobre el catálogo de planes y precios "
+            "(DirecTV, VTR, Movistar) y calcula escenarios combinados (ej. "
+            "un plan + decos/extensores adicionales). Úsala para '¿qué "
+            "incluye el plan X?', '¿cuánto cuesta...?', o cualquier "
+            "combinación de plan + extras. NO la confundas con las "
+            "funciones de CRM (leads_nuevos, ventas_cerradas, etc.) — esas "
+            "son datos de CLIENTES reales, esta es el catálogo de "
+            "PRODUCTOS."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pregunta": {
+                    "type": "string",
+                    "description": "La pregunta de catálogo/precio tal cual la escribió el dueño, sin modificar ni resumir.",
+                },
+            },
+            "required": ["pregunta"],
+        },
+    },
+    {
         "name": "respondieron_envio_masivo",
         "description": (
             "Cuenta cuántos contactos del último envío masivo respondieron "
@@ -735,6 +759,46 @@ async def _rutear_consulta_dueño(pregunta: str) -> list[tuple[str, dict]]:
     return [(b.name, (b.input or {})) for b in llamadas]
 
 
+async def _consultar_catalogo_interno(pregunta: str) -> str:
+    """
+    Responde una pregunta de catálogo/precios usando el mismo cerebro que
+    Valentina (Sonnet + catálogo completo de config/prompts.yaml), pero en
+    modo verificación interna del dueño — nunca en tono de venta. Se carga
+    el system_prompt crudo del YAML (no via prompt_builder.construir_prompt,
+    que agrega captura de nombre/estado de lead/fases de venta que no
+    aplican acá) y se le agrega el bloque de modo verificación al final.
+    """
+    with open("config/prompts.yaml", "r", encoding="utf-8") as f:
+        catalogo_completo = yaml.safe_load(f)["system_prompt"]
+
+    system_prompt = catalogo_completo + (
+        "\n\n─────────────────────────────────────────────\n"
+        "MODO VERIFICACIÓN INTERNA DEL DUEÑO — ESTO NO ES UN CLIENTE\n"
+        "Quien pregunta es Luis Barrios, el dueño del negocio, verificando "
+        "internamente los precios y cálculos del catálogo de arriba ANTES "
+        "de que lleguen a un cliente real.\n"
+        "→ NO uses tono de venta, ni frases de cierre, ni emojis, ni las "
+        "7 fases del flujo de venta — esto NO es una conversación comercial.\n"
+        "→ Responde directo, tipo ficha técnica: el o los precios, el "
+        "cálculo paso a paso si hay más de un ítem, y el total.\n"
+        "→ Si la pregunta involucra un dato que NO está en el catálogo de "
+        "arriba, dilo explícito ('eso no está confirmado en el catálogo') "
+        "— NUNCA inventes ni asumas un precio o característica no listada.\n"
+        "→ NO pidas dirección, NO ofrezcas agendar, NO derives a un "
+        "supervisor, NO agregues marcadores [ALERTA_...] — esto es una "
+        "consulta interna, no un lead real.\n"
+        "─────────────────────────────────────────────"
+    )
+
+    respuesta = await claude_client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=700,
+        system=system_prompt,
+        messages=[{"role": "user", "content": pregunta}],
+    )
+    return "".join(b.text for b in respuesta.content if b.type == "text")
+
+
 async def _ejecutar_consulta_dueño(nombre_funcion: str, parametros: dict) -> dict:
     """Ejecuta contra el CRM la función elegida por el router y devuelve datos crudos."""
     hoy_chile = datetime.now(_ZONA_CHILE).strftime("%Y-%m-%d")
@@ -760,6 +824,10 @@ async def _ejecutar_consulta_dueño(nombre_funcion: str, parametros: dict) -> di
     if nombre_funcion == "respondieron_envio_masivo":
         return await crm.contar_respondieron_envio_masivo()
 
+    if nombre_funcion == "consultar_catalogo":
+        respuesta_directa = await _consultar_catalogo_interno(parametros.get("pregunta", ""))
+        return {"respuesta_directa": respuesta_directa}
+
     if nombre_funcion == "dato_no_registrado":
         return {"razon": parametros.get("razon", "")}
 
@@ -774,6 +842,13 @@ async def _formatear_respuesta_dueño(pregunta: str, resultados: list[tuple[str,
     recibir más de un resultado (ej. "hoy y ayer" -> dos llamadas de
     contactos_activos) y debe combinarlos en una sola respuesta coherente.
     """
+    # consultar_catalogo ya devuelve una respuesta completa en lenguaje
+    # natural (Sonnet, no datos crudos) — pasarla por Haiku de nuevo solo
+    # arriesgaría recortarla al límite de "máximo 4 líneas" del formateador
+    # genérico, además de gastar una llamada de más sin necesidad.
+    if len(resultados) == 1 and resultados[0][0] == "consultar_catalogo":
+        return resultados[0][1]["respuesta_directa"]
+
     # Si TODOS los resultados son "no sé", no hace falta gastar una llamada
     # a Haiku — se responde directo con las razones (sin duplicar si se repiten).
     if all(nombre == "dato_no_registrado" for nombre, _ in resultados):

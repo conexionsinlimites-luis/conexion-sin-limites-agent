@@ -406,11 +406,36 @@ async def caso_router_dueno_preguntas_reales():
     assert len(llamadas) >= 2, f"esperaba al menos 2 llamadas para 'hoy y ayer', obtuvo {len(llamadas)}"
 
 
+async def caso_catalogo_extensor_gratis_940():
+    import agent.main as main
+
+    pregunta = "cuanto por internet de 940 megas directv y un extensor wifi"
+    llamadas = await main._rutear_consulta_dueño(pregunta)
+    nombres = [n for n, _ in llamadas]
+    assert "consultar_catalogo" in nombres, f"esperaba consultar_catalogo, obtuvo {nombres}"
+
+    resultados = []
+    for nombre_funcion, parametros in llamadas:
+        datos = await main._ejecutar_consulta_dueño(nombre_funcion, parametros)
+        resultados.append((nombre_funcion, datos))
+    respuesta = await main._formatear_respuesta_dueño(pregunta, resultados)
+
+    assert "16.990" in respuesta, (
+        f"no calculó el total correcto (debería ser $16.990 — el extensor es "
+        f"gratis en plan 940). Respuesta:\n{respuesta}"
+    )
+    texto_low = respuesta.lower()
+    assert "gratis" in texto_low or "$0" in respuesta or "sin costo" in texto_low, (
+        f"no mencionó que el extensor es gratis en plan 940. Respuesta:\n{respuesta}"
+    )
+
+
 CASOS_MODELO = [
     ("2 decos adicionales DirecTV", caso_precio_2_decos_adicionales),
     ("comuna sola pide calle+número", caso_comuna_sola_pide_calle_numero),
     ("WOM sin precio inventado", caso_wom_sin_precio_inventado),
     ("router dueño con preguntas reales", caso_router_dueno_preguntas_reales),
+    ("catálogo: extensor gratis en 940 DirecTV", caso_catalogo_extensor_gratis_940),
 ]
 
 

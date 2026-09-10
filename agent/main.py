@@ -697,9 +697,15 @@ async def _rutear_consulta_dueño(pregunta: str) -> tuple[str, dict]:
         messages=[{"role": "user", "content": pregunta}],
     )
 
-    for bloque in respuesta.content:
-        if bloque.type == "tool_use":
-            return bloque.name, (bloque.input or {})
+    llamadas = [b for b in respuesta.content if b.type == "tool_use"]
+    _log(
+        "INFO",
+        f"Modo dueño: router eligió {[(b.name, b.input) for b in llamadas]} "
+        f"para la pregunta: {pregunta!r}"
+    )
+    if llamadas:
+        primera = llamadas[0]
+        return primera.name, (primera.input or {})
     raise RuntimeError("Haiku no eligió ninguna herramienta de consulta")
 
 

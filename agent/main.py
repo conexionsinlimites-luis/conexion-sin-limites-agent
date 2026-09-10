@@ -14,6 +14,7 @@ import traceback
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 
@@ -553,70 +554,223 @@ async def _enviar_alerta_duda(telefono_cliente: str, pregunta: str):
         _log("ERROR", f"Error enviando alerta de duda: {e}")
 
 
-_MENU_DUEÑO = (
-    "No reconocí esa consulta. Por ahora puedo responder:\n"
-    "• leads de hoy / de esta semana\n"
-    "• respondieron vs no respondieron (envío masivo)\n\n"
-    "Ventas cerradas, pendientes de llamar y desglose por producto: "
-    "no tengo ese dato todavía en el sistema."
-)
+_ZONA_CHILE = ZoneInfo("America/Santiago")
+
+_HERRAMIENTAS_CONSULTA_DUEÑO = [
+    {
+        "name": "leads_nuevos",
+        "description": (
+            "Cuenta cuántos leads NUEVOS (primer contacto con Valentina) se "
+            "registraron en un período. Úsala para '¿cuántos leads/clientes "
+            "nuevos entraron hoy/esta semana/en [mes]?'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "fecha_desde": {"type": "string", "description": "Fecha de inicio del período, formato YYYY-MM-DD, horario de Chile."},
+                "fecha_hasta": {"type": "string", "description": "Fecha de fin del período, formato YYYY-MM-DD. Igual a fecha_desde si la pregunta es de un solo día."},
+            },
+            "required": ["fecha_desde"],
+        },
+    },
+    {
+        "name": "contactos_activos",
+        "description": (
+            "Cuenta cuántos contactos distintos escribieron al menos un "
+            "mensaje en un período, sin importar si son leads nuevos o "
+            "antiguos. Úsala para '¿cuánta gente escribió esta semana?' — a "
+            "diferencia de leads_nuevos, que solo cuenta el primer contacto."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "fecha_desde": {"type": "string", "description": "Fecha de inicio, YYYY-MM-DD, horario Chile."},
+                "fecha_hasta": {"type": "string", "description": "Fecha de fin, YYYY-MM-DD. Igual a fecha_desde si es un solo día."},
+            },
+            "required": ["fecha_desde"],
+        },
+    },
+    {
+        "name": "ventas_cerradas",
+        "description": (
+            "Cuenta ventas marcadas como cerradas en un período. IMPORTANTE: "
+            "estas ventas son solo las que el dueño cargó manualmente por "
+            "WhatsApp (modo dueño, comando 'carga') — no incluyen cierres "
+            "por llamada telefónica que él no haya cargado a mano."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "fecha_desde": {"type": "string", "description": "Fecha de inicio, YYYY-MM-DD, horario Chile."},
+                "fecha_hasta": {"type": "string", "description": "Fecha de fin, YYYY-MM-DD. Igual a fecha_desde si es un solo día."},
+            },
+            "required": ["fecha_desde"],
+        },
+    },
+    {
+        "name": "buscar_lead_por_telefono",
+        "description": "Busca los datos de un lead específico por su número de teléfono.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "telefono": {"type": "string", "description": "Número de teléfono mencionado, solo dígitos, con código de país si se conoce."},
+            },
+            "required": ["telefono"],
+        },
+    },
+    {
+        "name": "buscar_lead_por_nombre",
+        "description": "Busca lead(s) por coincidencia de nombre. Puede devolver varios resultados.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre o parte del nombre mencionado."},
+            },
+            "required": ["nombre"],
+        },
+    },
+    {
+        "name": "respondieron_envio_masivo",
+        "description": (
+            "Cuenta cuántos contactos del último envío masivo respondieron "
+            "vs. no respondieron. Solo para preguntas sobre 'respondieron' "
+            "en el contexto de un envío masivo."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "dato_no_registrado",
+        "description": (
+            "Úsala cuando la pregunta del dueño NO se puede responder con "
+            "ningún dato real disponible en el sistema (ej. pendientes de "
+            "llamar, desglose de ventas por producto, proyecciones de "
+            "ingresos, comisiones). Nunca inventes ni estimes un número — "
+            "usa esta función en su lugar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "razon": {"type": "string", "description": "Explicación breve de por qué no existe ese dato en el sistema."},
+            },
+            "required": ["razon"],
+        },
+    },
+]
 
 
-async def _generar_reporte_dueño(texto_lower: str) -> str:
+async def _rutear_consulta_dueño(pregunta: str) -> tuple[str, dict]:
     """
-    Clasifica la pregunta del dueño por palabra clave (Parte 1: reportes de
-    solo lectura) y devuelve la respuesta calculada con datos reales.
-
-    Regla estricta: si la pregunta cae en un caso donde no hay un dato
-    confiable hoy en la BD, responde exactamente "no tengo ese dato
-    todavía" — nunca estima ni aproxima.
+    Llamada 1 de 2 (Haiku): elige qué función de consulta responde la
+    pregunta del dueño y con qué parámetros. tool_choice="any" obliga a
+    Claude a SIEMPRE elegir una herramienta — nunca responde en texto
+    libre — así que cualquier pregunta cae en una de las 7 funciones,
+    incluida la de escape dato_no_registrado.
     """
-    # Ventas cerradas -> el estado 'cerrado' nunca se usa para leads de
-    # telecom (el bot solo llega hasta listo_para_cierre); el cierre real
-    # lo hace un humano por teléfono y no queda registrado en el sistema.
-    if _keyword_match(texto_lower, ["venta", "ventas"]) and \
-       _keyword_match(texto_lower, ["cerrada", "cerradas", "cerrado", "cerrados"]):
-        return "no tengo ese dato todavía"
+    ahora_chile = datetime.now(_ZONA_CHILE)
+    inicio_semana = ahora_chile - timedelta(days=ahora_chile.weekday())
+    contexto_fecha = (
+        f"Hoy es {ahora_chile.strftime('%Y-%m-%d')} (horario de Chile). "
+        f"Esta semana empezó el {inicio_semana.strftime('%Y-%m-%d')}."
+    )
 
-    # Pendientes de llamar -> no existe ningún campo de "llamar en tal fecha"
-    if _keyword_match(texto_lower, ["llamar"]):
-        return "no tengo ese dato todavía"
+    respuesta = await claude_client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=300,
+        system=(
+            "Eres el router de consultas del modo dueño de Conexión Sin "
+            "Límites. El dueño pregunta en lenguaje natural sobre su CRM de "
+            "WhatsApp. Tu único trabajo es elegir la herramienta correcta y "
+            "sus parámetros — nunca respondes la pregunta directamente. "
+            f"{contexto_fecha} Si la pregunta no encaja claramente en "
+            "ninguna herramienta de datos, usa dato_no_registrado."
+        ),
+        tools=_HERRAMIENTAS_CONSULTA_DUEÑO,
+        tool_choice={"type": "any"},
+        messages=[{"role": "user", "content": pregunta}],
+    )
 
-    # Desglose por producto -> subproducto nunca tiene estos valores, y
-    # lead_resumen (única fuente alternativa) cubre una muestra demasiado
-    # chica para presentarla como un desglose real.
-    if _keyword_match(texto_lower, ["directv", "vtr", "movistar", "claro"]) or \
-       (_keyword_match(texto_lower, ["desglose"]) and _keyword_match(texto_lower, ["producto", "productos"])):
-        return "no tengo ese dato todavía"
+    for bloque in respuesta.content:
+        if bloque.type == "tool_use":
+            return bloque.name, (bloque.input or {})
+    raise RuntimeError("Haiku no eligió ninguna herramienta de consulta")
 
-    # Respondieron vs no respondieron -> acotado a envío masivo (ver docstring
-    # de contar_respondieron_envio_masivo en crm.py)
-    if _keyword_match(texto_lower, ["respondieron"]):
-        datos = await crm.contar_respondieron_envio_masivo()
-        return (
-            f"De los {datos['total']} contactos de envío masivo: "
-            f"{datos['respondieron']} respondieron, "
-            f"{datos['no_respondieron']} no respondieron."
+
+async def _ejecutar_consulta_dueño(nombre_funcion: str, parametros: dict) -> dict:
+    """Ejecuta contra el CRM la función elegida por el router y devuelve datos crudos."""
+    hoy_chile = datetime.now(_ZONA_CHILE).strftime("%Y-%m-%d")
+
+    if nombre_funcion in ("leads_nuevos", "contactos_activos", "ventas_cerradas"):
+        fecha_desde = parametros.get("fecha_desde") or hoy_chile
+        fecha_hasta = parametros.get("fecha_hasta")
+        funcion_crm = getattr(crm, nombre_funcion)
+        return await funcion_crm(fecha_desde, fecha_hasta)
+
+    if nombre_funcion == "buscar_lead_por_telefono":
+        lead = await crm.buscar_lead_por_telefono(parametros.get("telefono", ""))
+        return {"encontrado": lead is not None, "lead": lead}
+
+    if nombre_funcion == "buscar_lead_por_nombre":
+        leads = await crm.buscar_lead_por_nombre(parametros.get("nombre", ""))
+        return {"total": len(leads), "leads": leads}
+
+    if nombre_funcion == "respondieron_envio_masivo":
+        return await crm.contar_respondieron_envio_masivo()
+
+    if nombre_funcion == "dato_no_registrado":
+        return {"razon": parametros.get("razon", "")}
+
+    raise ValueError(f"Función de consulta desconocida: {nombre_funcion}")
+
+
+async def _formatear_respuesta_dueño(pregunta: str, nombre_funcion: str, datos: dict) -> str:
+    """
+    Llamada 2 de 2 (Haiku): redacta la respuesta final en español a partir
+    ÚNICAMENTE de los datos ya calculados en Python — nunca toca la BD, así
+    que no puede inventar una cifra que no esté en `datos`.
+    """
+    if nombre_funcion == "dato_no_registrado":
+        razon = (datos.get("razon") or "").strip()
+        return f"No tengo ese dato todavía en el sistema.{(' ' + razon) if razon else ''}"
+
+    aviso_extra = ""
+    if nombre_funcion == "ventas_cerradas":
+        aviso_extra = (
+            " Aclara siempre, en la misma respuesta, que estas ventas son "
+            "las que el dueño (Luis) cargó manualmente por WhatsApp — no "
+            "incluyen cierres por llamada telefónica que él no haya "
+            "cargado a mano."
         )
 
-    # Leads/clientes ingresados hoy o esta semana
-    contiene_conteo = _keyword_match(texto_lower, ["lead", "leads", "cliente", "clientes"])
-    contiene_semana = _keyword_match(texto_lower, ["semana"])
-    contiene_hoy    = _keyword_match(texto_lower, ["hoy"])
-    if contiene_conteo and (contiene_semana or contiene_hoy):
-        ahora = datetime.utcnow()
-        if contiene_semana:
-            desde = (ahora - timedelta(days=ahora.weekday())).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            n = await crm.contar_leads_creados_desde(desde)
-            return f"{n} leads ingresaron esta semana."
-        else:
-            desde = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
-            n = await crm.contar_leads_creados_desde(desde)
-            return f"{n} leads ingresaron hoy."
+    respuesta = await claude_client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=250,
+        system=(
+            "Redactas la respuesta de WhatsApp para el dueño de Conexión "
+            "Sin Límites, basada EXCLUSIVAMENTE en los datos entregados. "
+            "Nunca inventes ni asumas un número que no esté en los datos. "
+            "Tono directo y breve — máximo 3 líneas, sin relleno ni "
+            "markdown, en español." + aviso_extra
+        ),
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Pregunta original del dueño: {pregunta}\n\n"
+                f"Datos reales calculados (función {nombre_funcion}):\n"
+                f"{json.dumps(datos, ensure_ascii=False, default=str)}"
+            ),
+        }],
+    )
+    for bloque in respuesta.content:
+        if bloque.type == "text":
+            return bloque.text.strip()
+    return "Tuve un problema generando la respuesta."
 
-    return _MENU_DUEÑO
+
+async def _responder_consulta_dueño(pregunta: str) -> str:
+    """Orquesta las 2 llamadas del motor de consulta abierta (Parte 4)."""
+    nombre_funcion, parametros = await _rutear_consulta_dueño(pregunta)
+    datos = await _ejecutar_consulta_dueño(nombre_funcion, parametros)
+    return await _formatear_respuesta_dueño(pregunta, nombre_funcion, datos)
 
 
 # ── Parte 2 — cargar ventas/leads con confirmación explícita ──────────────
@@ -849,7 +1003,7 @@ async def _procesar_mensaje_dueño(telefono: str, texto: str):
                 respuesta = _texto_confirmacion_carga(datos)
 
         else:
-            respuesta = await _generar_reporte_dueño(texto_lower)
+            respuesta = await _responder_consulta_dueño(texto_original)
 
     except Exception as e:
         _log("ERROR", f"Modo dueño: error procesando mensaje de {telefono}: {e}")

@@ -802,16 +802,106 @@ async def obtener_estadisticas() -> dict:
 
 
 # ═══════════════════════════════════════
-# MODO DUEÑO — REPORTES DE SOLO LECTURA
+# MODO DUEÑO — MOTOR DE CONSULTA ABIERTA
 # ═══════════════════════════════════════
+#
+# Funciones de solo lectura que el router (Haiku, en main.py) elige según
+# la pregunta en lenguaje natural del dueño. Cada una recibe parámetros ya
+# resueltos por el router (fechas concretas, teléfono, nombre) y devuelve
+# datos crudos — nunca texto — para que el paso de formateo no pueda
+# heredar un número mal calculado por la IA.
 
-async def contar_leads_creados_desde(desde: datetime) -> int:
-    """Cuenta leads con created_at >= desde. Usado por el modo dueño."""
+def rango_fecha_chile(fecha_desde: str, fecha_hasta: str | None = None) -> tuple[datetime, datetime]:
+    """
+    Convierte un rango de fechas en horario de Chile (YYYY-MM-DD) al rango
+    UTC naive equivalente, para comparar contra columnas TIMESTAMP que
+    Postgres guarda en UTC (CURRENT_TIMESTAMP corre en UTC en Railway).
+    Sin esta conversión, "hoy" calculado en UTC puede no coincidir con el
+    día calendario real del dueño en Chile.
+    """
+    fecha_hasta = fecha_hasta or fecha_desde
+    inicio_local = datetime.strptime(fecha_desde, "%Y-%m-%d").replace(
+        tzinfo=_ZONA_CHILE, hour=0, minute=0, second=0, microsecond=0
+    )
+    fin_local = datetime.strptime(fecha_hasta, "%Y-%m-%d").replace(
+        tzinfo=_ZONA_CHILE, hour=23, minute=59, second=59, microsecond=999999
+    )
+    return (
+        inicio_local.astimezone(timezone.utc).replace(tzinfo=None),
+        fin_local.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
+async def leads_nuevos(fecha_desde: str, fecha_hasta: str | None = None) -> dict:
+    """Cuenta leads cuyo primer contacto (created_at) cae dentro del período."""
+    desde, hasta = rango_fecha_chile(fecha_desde, fecha_hasta)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT COUNT(*) FROM leads WHERE created_at >= $1", desde
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM leads WHERE created_at BETWEEN $1 AND $2",
+            desde, hasta
         )
+    return {"total": total, "desde": fecha_desde, "hasta": fecha_hasta or fecha_desde}
+
+
+async def contactos_activos(fecha_desde: str, fecha_hasta: str | None = None) -> dict:
+    """
+    Cuenta contactos distintos que escribieron al menos un mensaje dentro
+    del período, sin importar cuándo se creó el lead — a diferencia de
+    leads_nuevos, que solo cuenta el primer contacto.
+    """
+    desde, hasta = rango_fecha_chile(fecha_desde, fecha_hasta)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("""
+            SELECT COUNT(DISTINCT telefono) FROM historial_mensajes
+            WHERE rol = 'user' AND timestamp BETWEEN $1 AND $2
+        """, desde, hasta)
+    return {"total": total, "desde": fecha_desde, "hasta": fecha_hasta or fecha_desde}
+
+
+async def ventas_cerradas(fecha_desde: str, fecha_hasta: str | None = None) -> dict:
+    """
+    Cuenta leads con estado='cerrado' cuya ultima_interaccion cae en el
+    período. Se usa ultima_interaccion como proxy de la fecha de cierre
+    porque no existe una columna fecha_cierre — asume que el estado no se
+    vuelve a tocar después de cerrarse. Todo registro 'cerrado' proviene de
+    la carga manual del dueño (Parte 2 del modo dueño): el bot nunca marca
+    un lead como cerrado por su cuenta, por eso el llamador (main.py) debe
+    aclarar siempre que estas ventas son solo las que el dueño cargó a mano.
+    """
+    desde, hasta = rango_fecha_chile(fecha_desde, fecha_hasta)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT nombre, telefono, subproducto FROM leads
+            WHERE estado = 'cerrado' AND ultima_interaccion BETWEEN $1 AND $2
+            ORDER BY ultima_interaccion
+        """, desde, hasta)
+    return {
+        "total": len(rows),
+        "detalle": [dict(r) for r in rows],
+        "desde": fecha_desde,
+        "hasta": fecha_hasta or fecha_desde,
+    }
+
+
+async def buscar_lead_por_telefono(telefono: str) -> dict | None:
+    """Busca un lead exacto por teléfono. Reusa obtener_lead()."""
+    telefono_limpio = re.sub(r"\D", "", telefono or "")
+    return await obtener_lead(telefono_limpio)
+
+
+async def buscar_lead_por_nombre(nombre: str) -> list[dict]:
+    """Busca leads por coincidencia parcial de nombre (case-insensitive)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM leads WHERE nombre ILIKE $1 "
+            "ORDER BY ultima_interaccion DESC LIMIT 10",
+            f"%{nombre}%"
+        )
+    return [dict(r) for r in rows]
 
 
 async def contar_respondieron_envio_masivo() -> dict:

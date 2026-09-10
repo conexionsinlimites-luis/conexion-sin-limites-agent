@@ -572,9 +572,18 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
             "type": "object",
             "properties": {
                 "fecha_desde": {"type": "string", "description": "Fecha de inicio del período, formato YYYY-MM-DD, horario de Chile."},
-                "fecha_hasta": {"type": "string", "description": "Fecha de fin del período, formato YYYY-MM-DD. Igual a fecha_desde si la pregunta es de un solo día."},
+                "fecha_hasta": {
+                    "type": "string",
+                    "description": (
+                        "Fecha de fin del período, formato YYYY-MM-DD, SIEMPRE obligatoria. "
+                        "Igual a fecha_desde si la pregunta es de un solo día. Para preguntas "
+                        "abiertas como 'reciente' o 'últimamente' (sin límite claro), usa como "
+                        "fecha_hasta el día de HOY — nunca la dejes igual a fecha_desde si el "
+                        "período pretende cubrir varios días."
+                    ),
+                },
             },
-            "required": ["fecha_desde"],
+            "required": ["fecha_desde", "fecha_hasta"],
         },
     },
     {
@@ -593,9 +602,19 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
             "type": "object",
             "properties": {
                 "fecha_desde": {"type": "string", "description": "Fecha de inicio, YYYY-MM-DD, horario Chile."},
-                "fecha_hasta": {"type": "string", "description": "Fecha de fin, YYYY-MM-DD. Igual a fecha_desde si es un solo día."},
+                "fecha_hasta": {
+                    "type": "string",
+                    "description": (
+                        "Fecha de fin, YYYY-MM-DD, SIEMPRE obligatoria. Igual a fecha_desde si "
+                        "es un solo día. Para preguntas abiertas como 'reciente' o "
+                        "'últimamente', usa como fecha_hasta el día de HOY — nunca la dejes "
+                        "igual a fecha_desde si el período pretende cubrir varios días. Si la "
+                        "pregunta menciona días separados (ej. 'hoy y ayer'), haz una llamada "
+                        "por cada día en vez de una sola con un rango amplio."
+                    ),
+                },
             },
-            "required": ["fecha_desde"],
+            "required": ["fecha_desde", "fecha_hasta"],
         },
     },
     {
@@ -610,9 +629,17 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
             "type": "object",
             "properties": {
                 "fecha_desde": {"type": "string", "description": "Fecha de inicio, YYYY-MM-DD, horario Chile."},
-                "fecha_hasta": {"type": "string", "description": "Fecha de fin, YYYY-MM-DD. Igual a fecha_desde si es un solo día."},
+                "fecha_hasta": {
+                    "type": "string",
+                    "description": (
+                        "Fecha de fin, YYYY-MM-DD, SIEMPRE obligatoria. Igual a fecha_desde si "
+                        "es un solo día. Para preguntas abiertas como 'reciente' o "
+                        "'últimamente', usa como fecha_hasta el día de HOY — nunca la dejes "
+                        "igual a fecha_desde si el período pretende cubrir varios días."
+                    ),
+                },
             },
-            "required": ["fecha_desde"],
+            "required": ["fecha_desde", "fecha_hasta"],
         },
     },
     {
@@ -666,13 +693,13 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
 ]
 
 
-async def _rutear_consulta_dueño(pregunta: str) -> tuple[str, dict]:
+async def _rutear_consulta_dueño(pregunta: str) -> list[tuple[str, dict]]:
     """
-    Llamada 1 de 2 (Haiku): elige qué función de consulta responde la
+    Llamada 1 de 2 (Haiku): elige qué función(es) de consulta responden la
     pregunta del dueño y con qué parámetros. tool_choice="any" obliga a
-    Claude a SIEMPRE elegir una herramienta — nunca responde en texto
-    libre — así que cualquier pregunta cae en una de las 7 funciones,
-    incluida la de escape dato_no_registrado.
+    Claude a SIEMPRE elegir al menos una herramienta — nunca responde en
+    texto libre. Puede elegir más de una (ej. "hoy y ayer" -> dos llamadas
+    de contactos_activos, una por día) — se ejecutan y formatean todas.
     """
     ahora_chile = datetime.now(_ZONA_CHILE)
     inicio_semana = ahora_chile - timedelta(days=ahora_chile.weekday())
@@ -703,10 +730,9 @@ async def _rutear_consulta_dueño(pregunta: str) -> tuple[str, dict]:
         f"Modo dueño: router eligió {[(b.name, b.input) for b in llamadas]} "
         f"para la pregunta: {pregunta!r}"
     )
-    if llamadas:
-        primera = llamadas[0]
-        return primera.name, (primera.input or {})
-    raise RuntimeError("Haiku no eligió ninguna herramienta de consulta")
+    if not llamadas:
+        raise RuntimeError("Haiku no eligió ninguna herramienta de consulta")
+    return [(b.name, (b.input or {})) for b in llamadas]
 
 
 async def _ejecutar_consulta_dueño(nombre_funcion: str, parametros: dict) -> dict:
@@ -714,8 +740,12 @@ async def _ejecutar_consulta_dueño(nombre_funcion: str, parametros: dict) -> di
     hoy_chile = datetime.now(_ZONA_CHILE).strftime("%Y-%m-%d")
 
     if nombre_funcion in ("leads_nuevos", "contactos_activos", "ventas_cerradas"):
+        # Red de seguridad: fecha_hasta ya es obligatoria en el schema, pero
+        # si igual llega vacía, un rango amplio (hasta hoy) es un fallo más
+        # seguro que uno angosto (= fecha_desde, que puede excluir días
+        # reales del período que el dueño quería consultar).
         fecha_desde = parametros.get("fecha_desde") or hoy_chile
-        fecha_hasta = parametros.get("fecha_hasta")
+        fecha_hasta = parametros.get("fecha_hasta") or hoy_chile
         funcion_crm = getattr(crm, nombre_funcion)
         return await funcion_crm(fecha_desde, fecha_hasta)
 
@@ -736,18 +766,23 @@ async def _ejecutar_consulta_dueño(nombre_funcion: str, parametros: dict) -> di
     raise ValueError(f"Función de consulta desconocida: {nombre_funcion}")
 
 
-async def _formatear_respuesta_dueño(pregunta: str, nombre_funcion: str, datos: dict) -> str:
+async def _formatear_respuesta_dueño(pregunta: str, resultados: list[tuple[str, dict]]) -> str:
     """
     Llamada 2 de 2 (Haiku): redacta la respuesta final en español a partir
     ÚNICAMENTE de los datos ya calculados en Python — nunca toca la BD, así
-    que no puede inventar una cifra que no esté en `datos`.
+    que no puede inventar una cifra que no esté en `resultados`. Puede
+    recibir más de un resultado (ej. "hoy y ayer" -> dos llamadas de
+    contactos_activos) y debe combinarlos en una sola respuesta coherente.
     """
-    if nombre_funcion == "dato_no_registrado":
-        razon = (datos.get("razon") or "").strip()
-        return f"No tengo ese dato todavía en el sistema.{(' ' + razon) if razon else ''}"
+    # Si TODOS los resultados son "no sé", no hace falta gastar una llamada
+    # a Haiku — se responde directo con las razones (sin duplicar si se repiten).
+    if all(nombre == "dato_no_registrado" for nombre, _ in resultados):
+        razones = [d.get("razon", "").strip() for _, d in resultados if d.get("razon", "").strip()]
+        razon_texto = " ".join(dict.fromkeys(razones))
+        return f"No tengo ese dato todavía en el sistema.{(' ' + razon_texto) if razon_texto else ''}"
 
     aviso_extra = ""
-    if nombre_funcion == "ventas_cerradas":
+    if any(nombre == "ventas_cerradas" for nombre, _ in resultados):
         aviso_extra = (
             " Aclara siempre, en la misma respuesta, que estas ventas son "
             "las que el dueño (Luis) cargó manualmente por WhatsApp — no "
@@ -755,23 +790,29 @@ async def _formatear_respuesta_dueño(pregunta: str, nombre_funcion: str, datos:
             "cargado a mano."
         )
 
+    bloques_datos = "\n\n".join(
+        f"Resultado {i + 1} (función {nombre}):\n{json.dumps(datos, ensure_ascii=False, default=str)}"
+        for i, (nombre, datos) in enumerate(resultados)
+    )
+
     respuesta = await claude_client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=250,
+        max_tokens=300,
         system=(
             "Redactas la respuesta de WhatsApp para el dueño de Conexión "
             "Sin Límites, basada EXCLUSIVAMENTE en los datos entregados. "
-            "Nunca inventes ni asumas un número que no esté en los datos. "
-            "Tono directo y breve — máximo 3 líneas, sin relleno ni "
+            "Puede haber más de un resultado (ej. una pregunta que mezcla "
+            "'hoy y ayer') — combínalos en una sola respuesta coherente que "
+            "cubra cada parte de la pregunta. Nunca inventes ni asumas un "
+            "número que no esté en los datos. Si alguno de los resultados es "
+            "dato_no_registrado mientras otros sí tienen datos reales, "
+            "acláralo brevemente para esa parte y responde igual el resto. "
+            "Tono directo y breve — máximo 4 líneas, sin relleno ni "
             "markdown, en español." + aviso_extra
         ),
         messages=[{
             "role": "user",
-            "content": (
-                f"Pregunta original del dueño: {pregunta}\n\n"
-                f"Datos reales calculados (función {nombre_funcion}):\n"
-                f"{json.dumps(datos, ensure_ascii=False, default=str)}"
-            ),
+            "content": f"Pregunta original del dueño: {pregunta}\n\n{bloques_datos}",
         }],
     )
     for bloque in respuesta.content:
@@ -782,9 +823,12 @@ async def _formatear_respuesta_dueño(pregunta: str, nombre_funcion: str, datos:
 
 async def _responder_consulta_dueño(pregunta: str) -> str:
     """Orquesta las 2 llamadas del motor de consulta abierta (Parte 4)."""
-    nombre_funcion, parametros = await _rutear_consulta_dueño(pregunta)
-    datos = await _ejecutar_consulta_dueño(nombre_funcion, parametros)
-    return await _formatear_respuesta_dueño(pregunta, nombre_funcion, datos)
+    llamadas = await _rutear_consulta_dueño(pregunta)
+    resultados = []
+    for nombre_funcion, parametros in llamadas:
+        datos = await _ejecutar_consulta_dueño(nombre_funcion, parametros)
+        resultados.append((nombre_funcion, datos))
+    return await _formatear_respuesta_dueño(pregunta, resultados)
 
 
 # ── Parte 2 — cargar ventas/leads con confirmación explícita ──────────────

@@ -276,11 +276,24 @@ system_prompt: |
     meses)
   - Dúo DTH Full 940M: $38.990 PAT/PAC | $42.990 efectivo (promo x12
     meses)
-  - Deco adicional 2do: $1.990/mes primeros 5 meses, luego $4.930/mes
-  - Deco adicional 3ro: $4.930/mes
-  - 1er deco (el del plan): gratis primeros 5 meses. Después NO
-    inventes el precio — no está confirmado; usa el marcador
-    [ALERTA_DUDA] (regla #21) si el cliente pregunta.
+  - Deco del plan (el que viene incluido, NO es "adicional"): gratis
+    primeros 5 meses. Después NO inventes el precio — no está
+    confirmado; usa el marcador [ALERTA_DUDA] (regla #21) si el
+    cliente pregunta.
+  - 1er deco ADICIONAL (el primero que se agrega aparte del plan):
+    $1.990/mes primeros 5 meses, luego $4.930/mes. Es el ÚNICO deco
+    adicional con descuento.
+  - 2do deco ADICIONAL en adelante (y cualquier otro después de ese):
+    $4.930/mes desde el mes 1, SIN descuento nunca. NUNCA le apliques
+    el precio de $1.990 al segundo deco adicional ni a los
+    siguientes — el descuento de $1.990 se usa UNA sola vez, solo en
+    el primer adicional.
+  - EJEMPLO DE CÁLCULO OBLIGATORIO (memorízalo, es el error más común
+    con este catálogo): Dúo DTH Esencial 800M efectivo ($31.990) + 2
+    decos adicionales, primeros 5 meses = $31.990 + $1.990 (1er
+    adicional) + $4.930 (2do adicional) = $38.910/mes. NO es $35.970
+    — ese número sale de aplicarle el descuento de $1.990 a los DOS
+    decos adicionales, lo cual está MAL.
   - Instalación Perfil Oro: $0 con internet | solo TV: $10.990
     (efectivo/tarjeta/cuenta), $0 con PAT/PAC
   - Instalación Perfil Plata: $10.990 (efectivo/tarjeta/cuenta), $0 con

@@ -832,8 +832,16 @@ def rango_fecha_chile(fecha_desde: str, fecha_hasta: str | None = None) -> tuple
     )
 
 
+_LIMITE_DETALLE_CONSULTA = 10
+
+
 async def leads_nuevos(fecha_desde: str, fecha_hasta: str | None = None) -> dict:
-    """Cuenta leads cuyo primer contacto (created_at) cae dentro del período."""
+    """
+    Cuenta leads cuyo primer contacto (created_at) cae dentro del período, y
+    devuelve además el detalle (nombre, teléfono, producto, estado) de hasta
+    los últimos _LIMITE_DETALLE_CONSULTA — para preguntas tipo "dame un
+    ejemplo" o "pásame el teléfono de algún lead reciente", no solo conteos.
+    """
     desde, hasta = rango_fecha_chile(fecha_desde, fecha_hasta)
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -841,14 +849,28 @@ async def leads_nuevos(fecha_desde: str, fecha_hasta: str | None = None) -> dict
             "SELECT COUNT(*) FROM leads WHERE created_at BETWEEN $1 AND $2",
             desde, hasta
         )
-    return {"total": total, "desde": fecha_desde, "hasta": fecha_hasta or fecha_desde}
+        rows = await conn.fetch("""
+            SELECT nombre, telefono, subproducto, estado, created_at
+            FROM leads WHERE created_at BETWEEN $1 AND $2
+            ORDER BY created_at DESC LIMIT $3
+        """, desde, hasta, _LIMITE_DETALLE_CONSULTA)
+    return {
+        "total": total,
+        "detalle": [dict(r) for r in rows],
+        "detalle_limitado_a": _LIMITE_DETALLE_CONSULTA,
+        "desde": fecha_desde,
+        "hasta": fecha_hasta or fecha_desde,
+    }
 
 
 async def contactos_activos(fecha_desde: str, fecha_hasta: str | None = None) -> dict:
     """
     Cuenta contactos distintos que escribieron al menos un mensaje dentro
     del período, sin importar cuándo se creó el lead — a diferencia de
-    leads_nuevos, que solo cuenta el primer contacto.
+    leads_nuevos, que solo cuenta el primer contacto. Devuelve además el
+    detalle (teléfono, nombre, hora del último mensaje) de hasta los
+    últimos _LIMITE_DETALLE_CONSULTA contactos, para preguntas tipo "quién
+    me escribió" o "dame un ejemplo de alguien que escribió".
     """
     desde, hasta = rango_fecha_chile(fecha_desde, fecha_hasta)
     pool = await get_pool()
@@ -857,7 +879,23 @@ async def contactos_activos(fecha_desde: str, fecha_hasta: str | None = None) ->
             SELECT COUNT(DISTINCT telefono) FROM historial_mensajes
             WHERE rol = 'user' AND timestamp BETWEEN $1 AND $2
         """, desde, hasta)
-    return {"total": total, "desde": fecha_desde, "hasta": fecha_hasta or fecha_desde}
+        rows = await conn.fetch("""
+            SELECT h.telefono, l.nombre, l.subproducto, l.estado,
+                   MAX(h.timestamp) AS ultimo_mensaje
+            FROM historial_mensajes h
+            LEFT JOIN leads l ON l.telefono = h.telefono
+            WHERE h.rol = 'user' AND h.timestamp BETWEEN $1 AND $2
+            GROUP BY h.telefono, l.nombre, l.subproducto, l.estado
+            ORDER BY ultimo_mensaje DESC
+            LIMIT $3
+        """, desde, hasta, _LIMITE_DETALLE_CONSULTA)
+    return {
+        "total": total,
+        "detalle": [dict(r) for r in rows],
+        "detalle_limitado_a": _LIMITE_DETALLE_CONSULTA,
+        "desde": fecha_desde,
+        "hasta": fecha_hasta or fecha_desde,
+    }
 
 
 async def ventas_cerradas(fecha_desde: str, fecha_hasta: str | None = None) -> dict:

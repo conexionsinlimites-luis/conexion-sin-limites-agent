@@ -561,8 +561,12 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
         "name": "leads_nuevos",
         "description": (
             "Cuenta cuántos leads NUEVOS (primer contacto con Valentina) se "
-            "registraron en un período. Úsala para '¿cuántos leads/clientes "
-            "nuevos entraron hoy/esta semana/en [mes]?'."
+            "registraron en un período, y devuelve además el detalle "
+            "(nombre, teléfono, producto, estado) de hasta los últimos 10. "
+            "Úsala tanto para '¿cuántos leads/clientes nuevos entraron "
+            "hoy/esta semana/en [mes]?' como para 'dame un ejemplo de un "
+            "lead reciente', 'pásame el teléfono de algún lead nuevo' o "
+            "'cuáles fueron los últimos leads que entraron'."
         ),
         "input_schema": {
             "type": "object",
@@ -578,8 +582,12 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
         "description": (
             "Cuenta cuántos contactos distintos escribieron al menos un "
             "mensaje en un período, sin importar si son leads nuevos o "
-            "antiguos. Úsala para '¿cuánta gente escribió esta semana?' — a "
-            "diferencia de leads_nuevos, que solo cuenta el primer contacto."
+            "antiguos, y devuelve además el detalle (nombre, teléfono, hora "
+            "del último mensaje) de hasta los últimos 10. Úsala tanto para "
+            "'¿cuánta gente escribió esta semana?' — a diferencia de "
+            "leads_nuevos, que solo cuenta el primer contacto — como para "
+            "'¿quién me escribió hoy?' o 'dame un ejemplo de alguien que "
+            "escribió'."
         ),
         "input_schema": {
             "type": "object",

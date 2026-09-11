@@ -448,6 +448,71 @@ async def caso_responder_consulta_dueño_guarda_turno():
     main._HISTORIAL_DUEÑO.pop(telefono, None)
 
 
+async def caso_cortesia_deteccion_exacta():
+    """
+    _es_cortesia debe reconocer SOLO el mensaje completo de cortesía (con
+    tolerancia a mayúsculas, espacios y signos de puntuación), y NUNCA una
+    pregunta real que solo contenga una de esas palabras como parte de una
+    frase más larga (falso positivo real que hay que evitar).
+    """
+    from agent.main import _es_cortesia, _respuesta_cortesia
+
+    for frase in ["gracias", "muchas gracias", "gracias!", "¡gracias!", "  gracias  ", "GRACIAS"]:
+        assert _es_cortesia(frase.lower()), frase
+        assert _respuesta_cortesia(frase.lower()) == "De nada 😊", frase
+
+    for frase in ["ok", "listo", "dale", "perfecto", "listo!", "Dale."]:
+        assert _es_cortesia(frase.lower()), frase
+        assert _respuesta_cortesia(frase.lower()) == "👍", frase
+
+    no_son_cortesia = [
+        "ok pero cuantos leads entraron",
+        "dale la direccion de Juan",
+        "gracias por la venta de ayer, cuanto fue",
+        "listo para cerrar esta venta",
+    ]
+    for frase in no_son_cortesia:
+        assert not _es_cortesia(frase.lower()), frase
+
+
+async def caso_cortesia_no_llega_al_router():
+    """
+    Regresión de integración: un "gracias" no debe disparar NINGUNA
+    llamada al router de Haiku (el motor de consulta nunca debe
+    ejecutarse) — debe responderse directo, sin gastar ni una llamada.
+    """
+    import agent.main as main
+
+    llamadas_router = []
+
+    async def _fake_create(*args, **kwargs):
+        llamadas_router.append(kwargs)
+        bloque = SimpleNamespace(
+            type="tool_use", name="dato_no_registrado",
+            input={"razon": "no debería haber llegado aquí"},
+        )
+        return SimpleNamespace(content=[bloque])
+
+    mensajes_enviados = []
+
+    async def _fake_enviar_mensaje(telefono, mensaje):
+        mensajes_enviados.append((telefono, mensaje))
+        return True
+
+    original_create = main.claude_client.messages.create
+    original_enviar = main.proveedor.enviar_mensaje
+    main.claude_client.messages.create = _fake_create
+    main.proveedor.enviar_mensaje = _fake_enviar_mensaje
+    try:
+        await main._procesar_mensaje_dueño("eval-test-cortesia", "gracias!")
+    finally:
+        main.claude_client.messages.create = original_create
+        main.proveedor.enviar_mensaje = original_enviar
+
+    assert not llamadas_router, f"el router se llamó pese a ser una cortesía: {llamadas_router}"
+    assert mensajes_enviados == [("eval-test-cortesia", "De nada 😊")], mensajes_enviados
+
+
 _PATRON_FECHA_DURA = re.compile(
     r"\b\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
     r"septiembre|octubre|noviembre|diciembre)\b",
@@ -690,6 +755,8 @@ CASOS_DETERMINISTAS = [
     ("router sin historial manda solo la pregunta actual", caso_router_sin_historial_previo),
     ("router usa historial para resolver referencias (regresión)", caso_router_usa_historial_para_referencias),
     ("_responder_consulta_dueño guarda el turno en el historial", caso_responder_consulta_dueño_guarda_turno),
+    ("cortesías: detección exacta, sin falsos positivos", caso_cortesia_deteccion_exacta),
+    ("cortesías: 'gracias' no llega al router (regresión)", caso_cortesia_no_llega_al_router),
     ("sin fechas de vencimiento hardcodeadas", caso_sin_fechas_vencidas_hardcodeadas),
     ("comisión DirecTV: menos de 14 puntos (proporcional)", caso_comision_directv_menos_de_14_puntos),
     ("comisión DirecTV: exactamente 14 puntos ($350.000)", caso_comision_directv_exactamente_14_puntos),

@@ -1401,6 +1401,37 @@ async def _ejecutar_exportacion(parametros: dict, formato: str, telefono_destino
     return "Tuve un problema mandando el archivo. Te lo muestro aquí en el chat en su lugar:\n\n" + _texto_resumen_export(filas)
 
 
+# ── Parte 6 — cortesías simples, sin pasar por el motor de consulta ───────
+
+_FRASES_AGRADECIMIENTO = {
+    "gracias", "muchas gracias", "muchísimas gracias", "mil gracias",
+    "te agradezco", "grax", "thanks",
+}
+
+_FRASES_CIERRE = {
+    "ok", "okay", "oka", "listo", "dale", "perfecto", "excelente",
+    "genial", "buena", "bien", "de acuerdo", "entendido", "joya",
+}
+
+
+def _es_cortesia(texto_lower: str) -> bool:
+    """
+    Coincidencia EXACTA del mensaje completo (no por palabra suelta dentro
+    de una frase) -- así "ok pero cuántos leads entraron" sigue yendo al
+    motor de consulta, y solo un mensaje que ES la cortesía completa se
+    intercepta.
+    """
+    normalizado = texto_lower.strip().strip("!¡?¿.,")
+    return normalizado in _FRASES_AGRADECIMIENTO or normalizado in _FRASES_CIERRE
+
+
+def _respuesta_cortesia(texto_lower: str) -> str:
+    normalizado = texto_lower.strip().strip("!¡?¿.,")
+    if normalizado in _FRASES_AGRADECIMIENTO:
+        return "De nada 😊"
+    return "👍"
+
+
 async def _procesar_mensaje_dueño(telefono: str, texto: str):
     """
     Modo dueño — mensajes desde cualquiera de los dos números del dueño
@@ -1459,6 +1490,9 @@ async def _procesar_mensaje_dueño(telefono: str, texto: str):
                 respuesta = _texto_pregunta_faltantes(datos, faltantes)
             else:
                 respuesta = _texto_confirmacion_carga(datos)
+
+        elif _es_cortesia(texto_lower):
+            respuesta = _respuesta_cortesia(texto_lower)
 
         else:
             respuesta = await _responder_consulta_dueño(texto_original, telefono)

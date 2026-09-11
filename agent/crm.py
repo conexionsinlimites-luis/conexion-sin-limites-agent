@@ -222,6 +222,42 @@ async def init_db():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_lead_notas_telefono ON lead_notas(telefono)"
         )
+
+        # ── Tabla ventas — separada de leads a propósito, para no perder
+        # historial cuando un mismo telefono compra más de una vez ────────
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ventas (
+                id                    SERIAL PRIMARY KEY,
+
+                telefono              TEXT NOT NULL,
+                lead_id               INTEGER REFERENCES leads(id),
+
+                compania              TEXT NOT NULL,
+                plan_vendido          TEXT,
+                incluye_internet      BOOLEAN DEFAULT FALSE,
+                incluye_tv            BOOLEAN DEFAULT FALSE,
+                incluye_telefonia     BOOLEAN DEFAULT FALSE,
+                forma_pago            TEXT,
+                monto_venta           INTEGER,
+
+                fecha_venta           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                fecha_instalacion     DATE,
+
+                tier_rgu              TEXT,
+                puntaje_comision      INTEGER,
+                fecha_pago_estimada   DATE,
+                estado_pago           TEXT DEFAULT 'pendiente',
+
+                origen                TEXT DEFAULT 'carga_manual',
+                notas                 TEXT DEFAULT '',
+                cliente_id            INTEGER REFERENCES clientes(id),
+                created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                actualizado_en        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ventas_telefono ON ventas(telefono)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ventas_fecha_venta ON ventas(fecha_venta)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ventas_compania ON ventas(compania)")
     print("CRM Valentina inicializado correctamente (PostgreSQL)")
 
 

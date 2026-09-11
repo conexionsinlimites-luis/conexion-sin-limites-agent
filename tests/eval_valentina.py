@@ -312,13 +312,140 @@ async def caso_router_dueno_multi_llamada():
     original_create = main.claude_client.messages.create
     main.claude_client.messages.create = _fake_create
     try:
-        llamadas = await main._rutear_consulta_dueño("quien me escribio hoy y ayer")
+        llamadas = await main._rutear_consulta_dueño("quien me escribio hoy y ayer", "eval-test-tel")
     finally:
         main.claude_client.messages.create = original_create
 
     assert len(llamadas) == 2, f"esperaba 2 llamadas (hoy y ayer), obtuvo {len(llamadas)}"
     nombres = [n for n, _ in llamadas]
     assert nombres == ["contactos_activos", "contactos_activos"], nombres
+
+
+async def caso_historial_dueño_limite_turnos():
+    """
+    _guardar_turno_historial_dueño debe quedarse solo con los últimos N
+    turnos (descartando los más viejos) y truncar respuestas largas, para
+    que un resumen extenso (ej. export en chat) no infle el contexto de
+    turnos futuros.
+    """
+    import agent.main as main
+
+    telefono = "eval-test-historial-limite"
+    main._HISTORIAL_DUEÑO.pop(telefono, None)
+    try:
+        for i in range(main._LIMITE_TURNOS_HISTORIAL + 3):
+            main._guardar_turno_historial_dueño(telefono, f"pregunta {i}", f"respuesta {i}")
+        turnos = main._HISTORIAL_DUEÑO[telefono]
+        assert len(turnos) == main._LIMITE_TURNOS_HISTORIAL, turnos
+        # deben quedar los ÚLTIMOS N, no los primeros
+        assert turnos[0]["pregunta"] == "pregunta 3", turnos
+        assert turnos[-1]["pregunta"] == f"pregunta {main._LIMITE_TURNOS_HISTORIAL + 2}", turnos
+
+        respuesta_larga = "x" * 1000
+        main._guardar_turno_historial_dueño(telefono, "otra pregunta", respuesta_larga)
+        assert len(main._HISTORIAL_DUEÑO[telefono][-1]["respuesta"]) == main._LIMITE_CARACTERES_RESPUESTA_HISTORIAL
+    finally:
+        main._HISTORIAL_DUEÑO.pop(telefono, None)
+
+
+async def caso_router_sin_historial_previo():
+    """Sin turnos guardados, el router debe mandar SOLO la pregunta actual -- el comportamiento base no debe cambiar."""
+    import agent.main as main
+
+    telefono = "eval-test-sin-historial"
+    main._HISTORIAL_DUEÑO.pop(telefono, None)
+
+    llamada_capturada = {}
+    bloque = SimpleNamespace(type="tool_use", name="dato_no_registrado", input={"razon": "n/a"})
+    respuesta_falsa = SimpleNamespace(content=[bloque])
+
+    async def _fake_create(*args, **kwargs):
+        llamada_capturada.update(kwargs)
+        return respuesta_falsa
+
+    original_create = main.claude_client.messages.create
+    main.claude_client.messages.create = _fake_create
+    try:
+        await main._rutear_consulta_dueño("pregunta nueva sin contexto previo", telefono)
+    finally:
+        main.claude_client.messages.create = original_create
+
+    mensajes = llamada_capturada.get("messages", [])
+    assert mensajes == [{"role": "user", "content": "pregunta nueva sin contexto previo"}], mensajes
+
+
+async def caso_router_usa_historial_para_referencias():
+    """
+    Regresión del bug real: el router debe incluir los turnos previos de
+    _HISTORIAL_DUEÑO como mensajes anteriores en la llamada a Claude --
+    sin esto, no puede resolver referencias como "esos dos leads" a una
+    pregunta anterior ("leads del 8 a la fecha").
+    """
+    import agent.main as main
+
+    telefono = "eval-test-historial-router"
+    main._HISTORIAL_DUEÑO.pop(telefono, None)
+    main._guardar_turno_historial_dueño(
+        telefono, "leads del 8 a la fecha",
+        "2 leads entraron entre el 8 y el 11 de septiembre.",
+    )
+
+    llamada_capturada = {}
+    bloque = SimpleNamespace(
+        type="tool_use", name="leads_nuevos",
+        input={"fecha_desde": "2026-09-08", "fecha_hasta": "2026-09-11"},
+    )
+    respuesta_falsa = SimpleNamespace(content=[bloque])
+
+    async def _fake_create(*args, **kwargs):
+        llamada_capturada.update(kwargs)
+        return respuesta_falsa
+
+    original_create = main.claude_client.messages.create
+    main.claude_client.messages.create = _fake_create
+    try:
+        await main._rutear_consulta_dueño("los numeros de esos dos leads", telefono)
+    finally:
+        main.claude_client.messages.create = original_create
+        main._HISTORIAL_DUEÑO.pop(telefono, None)
+
+    mensajes = llamada_capturada.get("messages", [])
+    assert len(mensajes) == 3, mensajes
+    assert mensajes[0] == {"role": "user", "content": "leads del 8 a la fecha"}, mensajes
+    assert mensajes[1] == {"role": "assistant", "content": "2 leads entraron entre el 8 y el 11 de septiembre."}, mensajes
+    assert mensajes[2] == {"role": "user", "content": "los numeros de esos dos leads"}, mensajes
+
+
+async def caso_responder_consulta_dueño_guarda_turno():
+    """
+    _responder_consulta_dueño debe guardar automáticamente el turno en
+    _HISTORIAL_DUEÑO al terminar -- sin esto la memoria nunca se llena,
+    aunque el router ya sepa leerla.
+    """
+    import agent.main as main
+
+    telefono = "eval-test-guardar-turno"
+    main._HISTORIAL_DUEÑO.pop(telefono, None)
+
+    bloque = SimpleNamespace(type="tool_use", name="dato_no_registrado", input={"razon": "prueba"})
+    respuesta_router_falsa = SimpleNamespace(content=[bloque])
+
+    async def _fake_create(*args, **kwargs):
+        return respuesta_router_falsa
+
+    original_create = main.claude_client.messages.create
+    main.claude_client.messages.create = _fake_create
+    try:
+        respuesta = await main._responder_consulta_dueño("una pregunta cualquiera", telefono)
+    finally:
+        main.claude_client.messages.create = original_create
+
+    turnos = main._HISTORIAL_DUEÑO.get(telefono, [])
+    assert len(turnos) == 1, turnos
+    assert turnos[0]["pregunta"] == "una pregunta cualquiera", turnos
+    assert turnos[0]["respuesta"] == respuesta, turnos
+
+    main._HISTORIAL_DUEÑO.pop(telefono, None)
 
 
 _PATRON_FECHA_DURA = re.compile(
@@ -559,6 +686,10 @@ CASOS_DETERMINISTAS = [
     ("extracción [ALERTA_DUDA]", caso_extraer_alerta_duda),
     ("validación de campos obligatorios (carga)", caso_validar_campos_obligatorios),
     ("router dueño ejecuta TODAS las llamadas (mock)", caso_router_dueno_multi_llamada),
+    ("historial dueño respeta el límite de turnos", caso_historial_dueño_limite_turnos),
+    ("router sin historial manda solo la pregunta actual", caso_router_sin_historial_previo),
+    ("router usa historial para resolver referencias (regresión)", caso_router_usa_historial_para_referencias),
+    ("_responder_consulta_dueño guarda el turno en el historial", caso_responder_consulta_dueño_guarda_turno),
     ("sin fechas de vencimiento hardcodeadas", caso_sin_fechas_vencidas_hardcodeadas),
     ("comisión DirecTV: menos de 14 puntos (proporcional)", caso_comision_directv_menos_de_14_puntos),
     ("comisión DirecTV: exactamente 14 puntos ($350.000)", caso_comision_directv_exactamente_14_puntos),
@@ -637,13 +768,13 @@ async def caso_router_dueno_preguntas_reales():
     ]
     fallos = []
     for pregunta, esperado in casos:
-        llamadas = await main._rutear_consulta_dueño(pregunta)
+        llamadas = await main._rutear_consulta_dueño(pregunta, "eval-test-tel")
         nombres = [n for n, _ in llamadas]
         if esperado not in nombres:
             fallos.append(f"'{pregunta}' -> esperaba incluir {esperado}, obtuvo {nombres}")
     assert not fallos, "fallos de ruteo:\n" + "\n".join(fallos)
 
-    llamadas = await main._rutear_consulta_dueño("quien me escribio hoy y ayer")
+    llamadas = await main._rutear_consulta_dueño("quien me escribio hoy y ayer", "eval-test-tel")
     assert len(llamadas) >= 2, f"esperaba al menos 2 llamadas para 'hoy y ayer', obtuvo {len(llamadas)}"
 
 
@@ -651,7 +782,7 @@ async def caso_catalogo_extensor_gratis_940():
     import agent.main as main
 
     pregunta = "cuanto por internet de 940 megas directv y un extensor wifi"
-    llamadas = await main._rutear_consulta_dueño(pregunta)
+    llamadas = await main._rutear_consulta_dueño(pregunta, "eval-test-tel")
     nombres = [n for n, _ in llamadas]
     assert "consultar_catalogo" in nombres, f"esperaba consultar_catalogo, obtuvo {nombres}"
 

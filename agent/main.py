@@ -795,13 +795,35 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
 ]
 
 
-async def _rutear_consulta_dueño(pregunta: str) -> list[tuple[str, dict]]:
+# Historial reciente de la conversación del modo dueño, en memoria — mismo
+# patrón y misma limitación conocida que _CARGA_PENDIENTE/_EXPORT_PENDIENTE
+# (se pierde si Railway redespliega a mitad de una conversación; se
+# reconstruye solo en los próximos mensajes). Sin esto, cada pregunta se
+# procesaba aislada y el router no podía resolver referencias como "esos
+# dos" o "el mismo período" a preguntas anteriores.
+_HISTORIAL_DUEÑO: dict[str, list[dict]] = {}
+_LIMITE_TURNOS_HISTORIAL = 6                    # últimos N intercambios pregunta+respuesta
+_LIMITE_CARACTERES_RESPUESTA_HISTORIAL = 500    # evita que un resumen largo (ej. export en chat) infle el contexto en turnos futuros
+
+
+def _guardar_turno_historial_dueño(telefono: str, pregunta: str, respuesta: str) -> None:
+    """Guarda un intercambio pregunta/respuesta y descarta los más viejos si se pasa del límite."""
+    turnos = _HISTORIAL_DUEÑO.setdefault(telefono, [])
+    turnos.append({"pregunta": pregunta, "respuesta": respuesta[:_LIMITE_CARACTERES_RESPUESTA_HISTORIAL]})
+    del turnos[:-_LIMITE_TURNOS_HISTORIAL]
+
+
+async def _rutear_consulta_dueño(pregunta: str, telefono: str) -> list[tuple[str, dict]]:
     """
     Llamada 1 de 2 (Haiku): elige qué función(es) de consulta responden la
     pregunta del dueño y con qué parámetros. tool_choice="any" obliga a
     Claude a SIEMPRE elegir al menos una herramienta — nunca responde en
     texto libre. Puede elegir más de una (ej. "hoy y ayer" -> dos llamadas
     de contactos_activos, una por día) — se ejecutan y formatean todas.
+
+    Recibe el historial reciente de _HISTORIAL_DUEÑO como turnos previos de
+    la conversación, para poder resolver referencias como "esos dos leads"
+    o "el mismo período" sin que el dueño tenga que repetir el contexto.
     """
     ahora_chile = datetime.now(_ZONA_CHILE)
     inicio_semana = ahora_chile - timedelta(days=ahora_chile.weekday())
@@ -809,6 +831,12 @@ async def _rutear_consulta_dueño(pregunta: str) -> list[tuple[str, dict]]:
         f"Hoy es {ahora_chile.strftime('%Y-%m-%d')} (horario de Chile). "
         f"Esta semana empezó el {inicio_semana.strftime('%Y-%m-%d')}."
     )
+
+    mensajes = []
+    for turno in _HISTORIAL_DUEÑO.get(telefono, []):
+        mensajes.append({"role": "user", "content": turno["pregunta"]})
+        mensajes.append({"role": "assistant", "content": turno["respuesta"]})
+    mensajes.append({"role": "user", "content": pregunta})
 
     respuesta = await claude_client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -819,11 +847,18 @@ async def _rutear_consulta_dueño(pregunta: str) -> list[tuple[str, dict]]:
             "WhatsApp. Tu único trabajo es elegir la herramienta correcta y "
             "sus parámetros — nunca respondes la pregunta directamente. "
             f"{contexto_fecha} Si la pregunta no encaja claramente en "
-            "ninguna herramienta de datos, usa dato_no_registrado."
+            "ninguna herramienta de datos, usa dato_no_registrado. "
+            "Si la pregunta actual NO menciona un período/fecha explícito "
+            "pero la conversación anterior sí estableció uno (ej. 'del 8 a "
+            "la fecha'), usa ESE MISMO período — no asumas 'hoy' por "
+            "defecto cuando el contexto ya estableció otro rango. Lo mismo "
+            "aplica a referencias como 'esos dos', 'ese cliente', 'el "
+            "mismo período': resuélvelas con la conversación anterior, no "
+            "las trates como una pregunta nueva sin contexto."
         ),
         tools=_HERRAMIENTAS_CONSULTA_DUEÑO,
         tool_choice={"type": "any"},
-        messages=[{"role": "user", "content": pregunta}],
+        messages=mensajes,
     )
 
     llamadas = [b for b in respuesta.content if b.type == "tool_use"]
@@ -990,18 +1025,21 @@ async def _responder_consulta_dueño(pregunta: str, telefono: str) -> str:
     primero (ver Parte 5, _procesar_mensaje_dueño la resuelve en el
     siguiente turno).
     """
-    llamadas = await _rutear_consulta_dueño(pregunta)
+    llamadas = await _rutear_consulta_dueño(pregunta, telefono)
 
     llamada_export = next((l for l in llamadas if l[0] == "exportar_datos"), None)
     if llamada_export:
         _EXPORT_PENDIENTE[telefono] = llamada_export[1]
-        return "¿Lo quieres como archivo (CSV/Excel) o te lo muestro aquí en el chat?"
+        respuesta = "¿Lo quieres como archivo (CSV/Excel) o te lo muestro aquí en el chat?"
+    else:
+        resultados = []
+        for nombre_funcion, parametros in llamadas:
+            datos = await _ejecutar_consulta_dueño(nombre_funcion, parametros)
+            resultados.append((nombre_funcion, datos))
+        respuesta = await _formatear_respuesta_dueño(pregunta, resultados)
 
-    resultados = []
-    for nombre_funcion, parametros in llamadas:
-        datos = await _ejecutar_consulta_dueño(nombre_funcion, parametros)
-        resultados.append((nombre_funcion, datos))
-    return await _formatear_respuesta_dueño(pregunta, resultados)
+    _guardar_turno_historial_dueño(telefono, pregunta, respuesta)
+    return respuesta
 
 
 # ── Parte 2 — cargar ventas/leads con confirmación explícita ──────────────

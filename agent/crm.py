@@ -227,34 +227,81 @@ async def init_db():
         # historial cuando un mismo telefono compra más de una vez ────────
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS ventas (
-                id                    SERIAL PRIMARY KEY,
+                id                          SERIAL PRIMARY KEY,
 
-                telefono              TEXT NOT NULL,
-                lead_id               INTEGER REFERENCES leads(id),
+                -- Identificación
+                telefono                    TEXT NOT NULL,
+                lead_id                     INTEGER REFERENCES leads(id),
+                nombre                      TEXT,
+                rut                         TEXT,
+                calle                       TEXT,
+                numero                      TEXT,
+                comuna                      TEXT,
 
-                compania              TEXT NOT NULL,
-                plan_vendido          TEXT,
-                incluye_internet      BOOLEAN DEFAULT FALSE,
-                incluye_tv            BOOLEAN DEFAULT FALSE,
-                incluye_telefonia     BOOLEAN DEFAULT FALSE,
-                forma_pago            TEXT,
-                monto_venta           INTEGER,
+                -- Detalle de venta
+                compania                    TEXT NOT NULL,
+                plan_vendido                TEXT,
+                incluye_internet            BOOLEAN DEFAULT FALSE,
+                incluye_tv                  BOOLEAN DEFAULT FALSE,
+                incluye_telefonia           BOOLEAN DEFAULT FALSE,
+                forma_pago                  TEXT,
+                decos_adicionales           INTEGER DEFAULT 0,
+                extras                      TEXT DEFAULT '',
+                monto_venta                 INTEGER,
+                fecha_venta                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                fecha_instalacion_estimada  DATE,
 
-                fecha_venta           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                fecha_instalacion     DATE,
+                -- Seguimiento manual (checklist operativo, se marca después de cargar)
+                estado_pago                 TEXT DEFAULT 'pendiente',
+                biometrica_enviada          BOOLEAN DEFAULT FALSE,
+                contrato_firmado            BOOLEAN DEFAULT FALSE,
+                carnet_foto_recibida        BOOLEAN DEFAULT FALSE,
+                ingresado_sistema_compania  BOOLEAN DEFAULT FALSE,
+                ingresado_drive             BOOLEAN DEFAULT FALSE,
+                plantilla_whatsapp_enviada  BOOLEAN DEFAULT FALSE,
+                ingresado_cds               BOOLEAN DEFAULT FALSE,
 
-                tier_rgu              TEXT,
-                puntaje_comision      INTEGER,
-                fecha_pago_estimada   DATE,
-                estado_pago           TEXT DEFAULT 'pendiente',
+                -- Comisión calculada (la llena el cálculo del mes, no la carga)
+                rgu_o_puntos                NUMERIC(6,1),
+                tramo_alcanzado             TEXT,
+                comision_calculada          INTEGER,
+                fecha_pago_estimada         DATE,
 
-                origen                TEXT DEFAULT 'carga_manual',
-                notas                 TEXT DEFAULT '',
-                cliente_id            INTEGER REFERENCES clientes(id),
-                created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                actualizado_en        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                -- Metadata
+                origen                      TEXT DEFAULT 'carga_manual',
+                notas                       TEXT DEFAULT '',
+                cliente_id                  INTEGER REFERENCES clientes(id),
+                created_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                actualizado_en              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migraciones incrementales — cubren tablas `ventas` ya creadas antes
+        # de que existieran estas columnas (dev/producción con el schema viejo).
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS rut TEXT")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS nombre TEXT")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS calle TEXT")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS numero TEXT")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS comuna TEXT")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS decos_adicionales INTEGER DEFAULT 0")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS extras TEXT DEFAULT ''")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS fecha_instalacion_estimada DATE")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS biometrica_enviada BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS contrato_firmado BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS carnet_foto_recibida BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS ingresado_sistema_compania BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS ingresado_drive BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS plantilla_whatsapp_enviada BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS ingresado_cds BOOLEAN DEFAULT FALSE")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS rgu_o_puntos NUMERIC(6,1)")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS tramo_alcanzado TEXT")
+        await conn.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS comision_calculada INTEGER")
+        # Columnas del diseño original de ventas, superadas por rgu_o_puntos/
+        # tramo_alcanzado/comision_calculada y fecha_instalacion_estimada —
+        # nunca tuvieron datos (nada las llegó a usar), se eliminan sin riesgo.
+        await conn.execute("ALTER TABLE ventas DROP COLUMN IF EXISTS tier_rgu")
+        await conn.execute("ALTER TABLE ventas DROP COLUMN IF EXISTS puntaje_comision")
+        await conn.execute("ALTER TABLE ventas DROP COLUMN IF EXISTS fecha_instalacion")
+
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ventas_telefono ON ventas(telefono)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ventas_fecha_venta ON ventas(fecha_venta)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ventas_compania ON ventas(compania)")
@@ -1001,6 +1048,398 @@ async def contar_respondieron_envio_masivo() -> dict:
             WHERE l.origen = 'envio_masivo'
         """)
         return dict(fila)
+
+
+# ═══════════════════════════════════════
+# REGISTRO DE VENTAS (tabla ventas)
+# ═══════════════════════════════════════
+
+async def registrar_venta(
+    telefono: str,
+    compania: str,
+    incluye_internet: bool,
+    incluye_tv: bool,
+    rut: str | None = None,
+    forma_pago: str | None = None,
+    plan_vendido: str | None = None,
+    nombre: str | None = None,
+    calle: str | None = None,
+    numero: str | None = None,
+    comuna: str | None = None,
+    decos_adicionales: int = 0,
+    extras: str | None = None,
+    monto_venta: int | None = None,
+    fecha_instalacion_estimada: str | None = None,
+    carnet_foto_recibida: bool = False,
+) -> None:
+    """
+    Inserta una fila en `ventas` para el cálculo de comisión. Se llama
+    desde el modo dueño (_ejecutar_carga_dueño) al confirmar una carga de
+    tipo='venta' — nunca para lead_nuevo, que no genera comisión.
+
+    Los campos de "seguimiento manual" del schema (contrato_firmado,
+    ingresado_sistema_compania, ingresado_drive, plantilla_whatsapp_enviada,
+    ingresado_cds, biometrica_enviada) NO se piden en la carga — quedan en
+    FALSE por defecto y se actualizan después, por otro flujo (pendiente,
+    no implementado todavía). carnet_foto_recibida es la única excepción
+    porque sí se confirma en el momento de la carga (VTR/Movistar).
+    """
+    fecha_instalacion_date = None
+    if fecha_instalacion_estimada:
+        fecha_instalacion_date = datetime.strptime(fecha_instalacion_estimada, "%Y-%m-%d").date()
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        lead = await conn.fetchrow("SELECT id FROM leads WHERE telefono = $1", telefono)
+        await conn.execute("""
+            INSERT INTO ventas (
+                telefono, lead_id, nombre, rut, calle, numero, comuna,
+                compania, plan_vendido, incluye_internet, incluye_tv,
+                forma_pago, decos_adicionales, extras, monto_venta,
+                fecha_instalacion_estimada, carnet_foto_recibida, origen
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                    $14, $15, $16, $17, 'carga_manual')
+        """,
+            telefono, lead["id"] if lead else None, nombre, rut, calle, numero, comuna,
+            compania, plan_vendido, incluye_internet, incluye_tv,
+            forma_pago, decos_adicionales, extras or "", monto_venta,
+            fecha_instalacion_date, carnet_foto_recibida,
+        )
+
+
+async def buscar_venta_por_telefono(telefono: str) -> dict | None:
+    """
+    Busca la venta MÁS RECIENTE de un teléfono (puede haber más de una en
+    el tiempo). Devuelve la fila completa — el paso de formateo extrae y
+    muestra solo el campo puntual que el dueño haya pedido (ej. "el RUT").
+    """
+    telefono_limpio = re.sub(r"\D", "", telefono or "")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM ventas WHERE telefono = $1 ORDER BY fecha_venta DESC LIMIT 1",
+            telefono_limpio,
+        )
+        return dict(row) if row else None
+
+
+async def buscar_venta_por_nombre(nombre: str) -> list[dict]:
+    """Busca ventas por coincidencia parcial de nombre (case-insensitive)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM ventas WHERE nombre ILIKE $1 "
+            "ORDER BY fecha_venta DESC LIMIT 10",
+            f"%{nombre}%",
+        )
+        return [dict(r) for r in rows]
+
+
+async def exportar_ventas(fecha_desde: str, fecha_hasta: str | None = None) -> list[dict]:
+    """Todas las filas de `ventas` en el período, para exportar (CSV o resumen en chat)."""
+    desde, hasta = rango_fecha_chile(fecha_desde, fecha_hasta)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM ventas WHERE fecha_venta BETWEEN $1 AND $2 ORDER BY fecha_venta",
+            desde, hasta,
+        )
+        return [dict(r) for r in rows]
+
+
+async def exportar_leads(fecha_desde: str, fecha_hasta: str | None = None) -> list[dict]:
+    """Todas las filas de `leads` creadas en el período, para exportar (CSV o resumen en chat)."""
+    desde, hasta = rango_fecha_chile(fecha_desde, fecha_hasta)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM leads WHERE created_at BETWEEN $1 AND $2 ORDER BY created_at",
+            desde, hasta,
+        )
+        return [dict(r) for r in rows]
+
+
+# ═══════════════════════════════════════
+# COMISIONES — DIRECTV
+# ═══════════════════════════════════════
+#
+# Reglas confirmadas por el dueño el 2026-09-10. Cubren SOLO DirecTV — VTR
+# y Movistar tienen su propio sistema de tier/RGU, pendiente de definir
+# aparte. No inventar ni extender esta lógica a otras compañías.
+
+_PUNTOS_DUO_DIRECTV = 2.0      # TV + Internet juntos en la misma venta
+_PUNTOS_SOLO_DIRECTV = 1.5     # Solo TV o solo Internet, por separado
+_BONO_PAT_PAC = 0.5            # Adicional si esa venta se pagó con PAT/PAC
+_UMBRAL_SUELDO_BASE = 14       # Puntos totales del mes a partir de los cuales aplica el sueldo base
+_SUELDO_BASE = 350_000         # CLP, con >= 14 puntos en el mes
+_VALOR_POR_PUNTO = 20_000      # CLP por punto, tanto bajo el umbral como por sobre él
+
+# Bono Rally (confirmado 2026-09-11): adicional al sueldo por puntos, no lo
+# reemplaza. Requiere AMBAS condiciones en el mes: >= 6 ventas Dúo, Y que
+# al menos el 30% del TOTAL de ventas DirecTV del mes (no solo las Dúo) se
+# hayan pagado con PAT/PAC.
+_UMBRAL_RALLY_VENTAS_DUO = 6
+_UMBRAL_RALLY_PORCENTAJE_PAT_PAC = 0.30
+_BONO_RALLY = 100_000
+
+
+def puntos_venta_directv(venta: dict) -> float:
+    """
+    Calcula los puntos de comisión DirecTV de UNA venta.
+
+    Dúo (TV + Internet juntos) = 2 puntos. Solo TV o solo Internet (por
+    separado) = 1.5 puntos. +0.5 puntos si esa venta se pagó con PAT/PAC.
+
+    `venta` espera las claves incluye_internet, incluye_tv (bool) y
+    forma_pago (str) — el mismo shape que una fila de la tabla `ventas`.
+    Lanza ValueError si la venta no tiene ni internet ni TV, porque la
+    regla confirmada no cubre ese caso — mejor fallar fuerte que asumir.
+    """
+    tiene_internet = bool(venta.get("incluye_internet"))
+    tiene_tv = bool(venta.get("incluye_tv"))
+
+    if tiene_internet and tiene_tv:
+        puntos = _PUNTOS_DUO_DIRECTV
+    elif tiene_internet or tiene_tv:
+        puntos = _PUNTOS_SOLO_DIRECTV
+    else:
+        raise ValueError(
+            "Venta DirecTV sin internet ni TV — no se puede calcular puntos "
+            "(la regla confirmada solo cubre Dúo, Solo TV o Solo Internet)."
+        )
+
+    forma_pago = (venta.get("forma_pago") or "").strip().upper()
+    if forma_pago == "PAT/PAC":
+        puntos += _BONO_PAT_PAC
+
+    return puntos
+
+
+def calcular_sueldo_directv(puntos_totales: float) -> int:
+    """
+    Sueldo mensual DirecTV según puntos totales acumulados en el mes.
+
+    < 14 puntos: proporcional ($20.000 por punto).
+    >= 14 puntos: $350.000 base + $20.000 por cada punto sobre 14.
+    """
+    if puntos_totales < _UMBRAL_SUELDO_BASE:
+        sueldo = puntos_totales * _VALOR_POR_PUNTO
+    else:
+        sueldo = _SUELDO_BASE + (puntos_totales - _UMBRAL_SUELDO_BASE) * _VALOR_POR_PUNTO
+    return round(sueldo)
+
+
+def calcular_bono_rally_directv(ventas: list[dict]) -> dict:
+    """
+    Bono Rally DirecTV: +$100.000 en el mes si se cumplen AMBAS condiciones
+    — al menos 6 ventas Dúo (TV+Internet), Y al menos 30% del TOTAL de
+    ventas DirecTV del mes (todas, no solo las Dúo) pagadas con PAT/PAC.
+    Es adicional al sueldo por puntos, no lo reemplaza.
+    """
+    total_ventas = len(ventas)
+    ventas_duo = sum(
+        1 for v in ventas if bool(v.get("incluye_internet")) and bool(v.get("incluye_tv"))
+    )
+    ventas_pat_pac = sum(
+        1 for v in ventas if (v.get("forma_pago") or "").strip().upper() == "PAT/PAC"
+    )
+    porcentaje_pat_pac = (ventas_pat_pac / total_ventas) if total_ventas else 0.0
+    califica = (
+        ventas_duo >= _UMBRAL_RALLY_VENTAS_DUO
+        and porcentaje_pat_pac >= _UMBRAL_RALLY_PORCENTAJE_PAT_PAC
+    )
+    return {
+        "ventas_duo": ventas_duo,
+        "total_ventas": total_ventas,
+        "ventas_pat_pac": ventas_pat_pac,
+        "porcentaje_pat_pac": round(porcentaje_pat_pac * 100, 1),
+        "califica": califica,
+        "bono": _BONO_RALLY if califica else 0,
+    }
+
+
+def calcular_comision_directv(ventas: list[dict]) -> dict:
+    """
+    Suma los puntos de una lista de ventas DirecTV del mes, calcula el
+    sueldo por puntos, y le suma el bono Rally si corresponde. `ventas` es
+    una lista de dicts con el mismo shape que espera puntos_venta_directv.
+    """
+    puntos_totales = sum(puntos_venta_directv(v) for v in ventas)
+    sueldo_por_puntos = calcular_sueldo_directv(puntos_totales)
+    rally = calcular_bono_rally_directv(ventas)
+    return {
+        "puntos_totales": puntos_totales,
+        "sueldo_por_puntos": sueldo_por_puntos,
+        "rally": rally,
+        "sueldo_total": sueldo_por_puntos + rally["bono"],
+        "cantidad_ventas": len(ventas),
+    }
+
+
+# ═══════════════════════════════════════
+# COMISIONES — VTR / CLARO / MOVISTAR (POR RGU)
+# ═══════════════════════════════════════
+#
+# Reglas confirmadas por el dueño el 2026-09-10. VTR y Claro comparten UN
+# solo contador combinado de RGU (una venta de cualquiera de las dos suma
+# al mismo total); Movistar tiene su propio contador, independiente y sin
+# bonos/variables adicionales. DirecTV usa el sistema de puntos de arriba
+# — no mezclar la lógica de ambos sistemas.
+#
+# Mecanismo de pago (aplica a ambos grupos): durante el mes cada venta se
+# paga de inmediato a la tarifa del tramo 1 (base); el día 5 del mes
+# siguiente se paga la diferencia, aplicada RETROACTIVAMENTE a TODAS las
+# ventas del mes según el tramo FINAL alcanzado por el RGU total acumulado
+# — no solo a las ventas que cayeron dentro del tramo nuevo. Por eso el
+# cálculo de "total_final" usa la tarifa del tramo final para cada venta,
+# sin importar en qué momento del mes se hizo.
+
+# (rgu_minimo, tarifa_solo_internet, tarifa_duo) — de mayor a menor umbral,
+# _tarifa_por_tramo recorre la lista y toma el primer tramo que calza.
+_TRAMOS_VTR_CLARO = [
+    (51, 50_000, 80_000),
+    (31, 45_000, 75_000),
+    (1,  40_000, 70_000),
+]
+
+_TRAMOS_MOVISTAR = [
+    (51, 45_000, 65_000),
+    (1,  40_000, 60_000),
+]
+
+_COMPANIAS_VTR_CLARO = {"vtr", "claro"}
+_COMPANIAS_MOVISTAR = {"movistar"}
+
+
+def rgu_venta(venta: dict) -> int:
+    """
+    Cuenta los RGU de UNA venta VTR/Claro/Movistar. Dúo (Internet+TV) = 2
+    RGU. Solo Internet = 1 RGU. La regla confirmada NO cubre "solo TV" para
+    estas compañías (a diferencia de DirecTV) — lanza ValueError en ese
+    caso, en vez de asumir un número.
+    """
+    tiene_internet = bool(venta.get("incluye_internet"))
+    tiene_tv = bool(venta.get("incluye_tv"))
+
+    if tiene_internet and tiene_tv:
+        return 2
+    if tiene_internet and not tiene_tv:
+        return 1
+    raise ValueError(
+        "Venta VTR/Claro/Movistar sin el patrón Dúo o Solo Internet — no "
+        "se puede contar RGU (la regla confirmada no cubre 'solo TV' para "
+        "estas compañías)."
+    )
+
+
+def _tarifa_por_tramo(rgu_acumulado: int, tramos: list[tuple[int, int, int]]) -> tuple[int, int]:
+    """Retorna (tarifa_solo_internet, tarifa_duo) del tramo que corresponde a rgu_acumulado."""
+    for rgu_minimo, tarifa_solo, tarifa_duo in tramos:
+        if rgu_acumulado >= rgu_minimo:
+            return tarifa_solo, tarifa_duo
+    raise ValueError(f"No hay tramo definido para {rgu_acumulado} RGU")
+
+
+def _validar_companias(ventas: list[dict], companias_validas: set[str], nombre_grupo: str) -> None:
+    """
+    Red de seguridad: si una venta trae `compania` y no pertenece al grupo
+    esperado, falla fuerte en vez de sumarla en silencio al contador
+    equivocado (VTR/Claro y Movistar NUNCA se mezclan).
+    """
+    for v in ventas:
+        compania = (v.get("compania") or "").strip().lower()
+        if compania and compania not in companias_validas:
+            raise ValueError(
+                f"Venta de compañía '{v.get('compania')}' no pertenece al "
+                f"grupo {nombre_grupo} — revisa que no se mezclaron ventas "
+                f"de otra compañía en la lista."
+            )
+
+
+def _calcular_comision_por_rgu(ventas: list[dict], tramos: list[tuple[int, int, int]]) -> dict:
+    """
+    Núcleo compartido del cálculo de comisión por RGU — VTR+Claro y
+    Movistar usan la misma mecánica (conteo de RGU, tramos, pago
+    retroactivo al tramo final), solo cambian el contador y la tabla de
+    tarifas.
+    """
+    rgus = [rgu_venta(v) for v in ventas]
+    rgu_total = sum(rgus)
+    tarifa_solo, tarifa_duo = _tarifa_por_tramo(rgu_total, tramos)
+    tarifa_base_solo, tarifa_base_duo = _tarifa_por_tramo(1, tramos)  # tramo 1, siempre
+
+    total_final = sum(tarifa_duo if r == 2 else tarifa_solo for r in rgus)
+    pago_inicial = sum(tarifa_base_duo if r == 2 else tarifa_base_solo for r in rgus)
+
+    return {
+        "rgu_total": rgu_total,
+        "cantidad_ventas": len(ventas),
+        "tarifa_solo_internet": tarifa_solo,
+        "tarifa_duo": tarifa_duo,
+        "pago_inicial": pago_inicial,
+        "total_final": total_final,
+        "diferencia_dia_5": total_final - pago_inicial,
+    }
+
+
+def calcular_comision_vtr_claro(ventas: list[dict]) -> dict:
+    """
+    VTR + Claro comparten UN solo contador combinado de RGU — una venta de
+    cualquiera de las dos compañías cuenta para el mismo total. `ventas`
+    debe incluir las de ambas juntas.
+    """
+    _validar_companias(ventas, _COMPANIAS_VTR_CLARO, "VTR/Claro")
+    return _calcular_comision_por_rgu(ventas, _TRAMOS_VTR_CLARO)
+
+
+def calcular_comision_movistar(ventas: list[dict]) -> dict:
+    """Movistar tiene su propio contador de RGU, independiente de VTR/Claro."""
+    _validar_companias(ventas, _COMPANIAS_MOVISTAR, "Movistar")
+    return _calcular_comision_por_rgu(ventas, _TRAMOS_MOVISTAR)
+
+
+async def comision_mes(fecha_desde: str, fecha_hasta: str | None = None) -> dict:
+    """
+    Calcula la comisión combinada del mes (DirecTV + VTR/Claro + Movistar)
+    a partir de las filas reales de la tabla `ventas` en el período. Si un
+    grupo tiene ventas con datos incompletos (ej. sin incluye_internet ni
+    incluye_tv), NO se cae todo el cálculo — se reporta el error de ESE
+    grupo específicamente en `<grupo>_error`, y los demás grupos igual se
+    calculan.
+    """
+    desde, hasta = rango_fecha_chile(fecha_desde, fecha_hasta)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT compania, plan_vendido, incluye_internet, incluye_tv, forma_pago
+            FROM ventas WHERE fecha_venta BETWEEN $1 AND $2
+        """, desde, hasta)
+    ventas = [dict(r) for r in rows]
+
+    def _de_compania(*nombres):
+        return [v for v in ventas if (v.get("compania") or "").strip().lower() in nombres]
+
+    resultado = {"desde": fecha_desde, "hasta": fecha_hasta or fecha_desde, "total_ventas": len(ventas)}
+
+    for grupo, ventas_grupo, funcion in (
+        ("directv",   _de_compania("directv"),     calcular_comision_directv),
+        ("vtr_claro", _de_compania("vtr", "claro"), calcular_comision_vtr_claro),
+        ("movistar",  _de_compania("movistar"),     calcular_comision_movistar),
+    ):
+        if not ventas_grupo:
+            continue
+        try:
+            resultado[grupo] = funcion(ventas_grupo)
+        except ValueError as e:
+            resultado[f"{grupo}_error"] = str(e)
+
+    resultado["sueldo_total_estimado"] = (
+        resultado.get("directv", {}).get("sueldo_total", 0)
+        + resultado.get("vtr_claro", {}).get("total_final", 0)
+        + resultado.get("movistar", {}).get("total_final", 0)
+    )
+    return resultado
 
 
 # ═══════════════════════════════════════

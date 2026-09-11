@@ -37,3 +37,14 @@ class ProveedorWhatsApp(ABC):
     async def validar_webhook(self, request: Request) -> dict | int | None:
         """Verificación GET del webhook (solo Meta la requiere). Retorna respuesta o None."""
         return None
+
+    async def enviar_documento(
+        self, telefono: str, contenido: bytes, nombre_archivo: str,
+        mime_type: str, caption: str = "",
+    ) -> bool:
+        """
+        Envía un archivo adjunto (ej. un CSV de exportación). No todos los
+        proveedores lo soportan — por defecto retorna False; cada proveedor
+        que sí lo soporte lo sobreescribe (ver meta.py).
+        """
+        return False

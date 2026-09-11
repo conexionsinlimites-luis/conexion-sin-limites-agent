@@ -262,13 +262,35 @@ async def caso_validar_campos_obligatorios():
     incompleto = {"tipo": "venta", "nombre": "Juan", "campos_faltantes": []}
     faltantes = _validar_campos_obligatorios(incompleto)
     assert "telefono" in faltantes, faltantes
-    assert "producto" in faltantes, faltantes  # es venta -> producto es obligatorio
+    assert "producto" in faltantes, faltantes       # es venta -> producto es obligatorio
+    assert "rut" in faltantes, faltantes             # RUT siempre obligatorio en una venta
+    assert "internet_o_tv" in faltantes, faltantes   # hace falta saber qué se vendió
+    assert "forma_pago" in faltantes, faltantes      # forma_pago ahora es SIEMPRE obligatorio
 
-    completo = {
-        "tipo": "venta", "nombre": "Juan", "telefono": "56912345678",
-        "producto": "DirecTV", "campos_faltantes": [],
+    # DirecTV completo -> nada pendiente (no pide carnet_foto_recibida, ahí basta el RUT)
+    directv_completo = {
+        "tipo": "venta", "nombre": "Juan", "telefono": "56912345678", "rut": "12.345.678-9",
+        "producto": "DirecTV", "incluye_internet": True, "incluye_tv": True,
+        "forma_pago": "PAT/PAC", "campos_faltantes": [],
     }
-    assert _validar_campos_obligatorios(completo) == []
+    assert _validar_campos_obligatorios(directv_completo) == [], _validar_campos_obligatorios(directv_completo)
+
+    # VTR sin carnet_foto_recibida: sí debe quedar pendiente
+    vtr_sin_carnet = {
+        "tipo": "venta", "nombre": "Juan", "telefono": "56912345678", "rut": "12.345.678-9",
+        "producto": "VTR", "incluye_internet": True, "incluye_tv": False,
+        "forma_pago": "efectivo", "campos_faltantes": [],
+    }
+    faltantes_vtr = _validar_campos_obligatorios(vtr_sin_carnet)
+    assert "carnet_foto_recibida" in faltantes_vtr, faltantes_vtr
+
+    # VTR completo, con carnet_foto_recibida=False EXPLÍCITO (no es lo mismo
+    # que "no se sabe") -> nada pendiente
+    vtr_completo = {**vtr_sin_carnet, "carnet_foto_recibida": False}
+    assert _validar_campos_obligatorios(vtr_completo) == [], _validar_campos_obligatorios(vtr_completo)
+
+    # DirecTV sin carnet_foto_recibida: NO debe pedirlo (solo VTR/Movistar)
+    assert "carnet_foto_recibida" not in _validar_campos_obligatorios(directv_completo)
 
 
 async def caso_router_dueno_multi_llamada():
@@ -321,6 +343,211 @@ async def caso_sin_fechas_vencidas_hardcodeadas():
     assert not encontrados, "fecha de vencimiento hardcodeada encontrada:\n" + "\n".join(encontrados)
 
 
+async def caso_comision_directv_menos_de_14_puntos():
+    from agent import crm
+
+    assert crm.calcular_sueldo_directv(10) == 200_000, crm.calcular_sueldo_directv(10)
+    assert crm.calcular_sueldo_directv(5.5) == 110_000, crm.calcular_sueldo_directv(5.5)
+
+
+async def caso_comision_directv_exactamente_14_puntos():
+    from agent import crm
+
+    assert crm.calcular_sueldo_directv(14) == 350_000, crm.calcular_sueldo_directv(14)
+
+
+async def caso_comision_directv_mas_de_14_puntos():
+    from agent import crm
+
+    assert crm.calcular_sueldo_directv(16) == 390_000, crm.calcular_sueldo_directv(16)
+    assert crm.calcular_sueldo_directv(20) == 470_000, crm.calcular_sueldo_directv(20)
+
+
+async def caso_puntos_venta_duo_con_pat_pac():
+    from agent import crm
+
+    duo_pat_pac = {"incluye_internet": True, "incluye_tv": True, "forma_pago": "PAT/PAC"}
+    duo_sin_bono = {"incluye_internet": True, "incluye_tv": True, "forma_pago": "efectivo"}
+    assert crm.puntos_venta_directv(duo_pat_pac) == 2.5, crm.puntos_venta_directv(duo_pat_pac)
+    assert crm.puntos_venta_directv(duo_sin_bono) == 2.0, crm.puntos_venta_directv(duo_sin_bono)
+
+
+async def caso_puntos_venta_solo_con_pat_pac():
+    from agent import crm
+
+    solo_internet_pat_pac = {"incluye_internet": True, "incluye_tv": False, "forma_pago": "pat/pac"}
+    solo_tv_pat_pac = {"incluye_internet": False, "incluye_tv": True, "forma_pago": "PAT/PAC"}
+    solo_sin_bono = {"incluye_internet": True, "incluye_tv": False, "forma_pago": "efectivo"}
+    assert crm.puntos_venta_directv(solo_internet_pat_pac) == 2.0, crm.puntos_venta_directv(solo_internet_pat_pac)
+    assert crm.puntos_venta_directv(solo_tv_pat_pac) == 2.0, crm.puntos_venta_directv(solo_tv_pat_pac)
+    assert crm.puntos_venta_directv(solo_sin_bono) == 1.5, crm.puntos_venta_directv(solo_sin_bono)
+
+    # Venta sin internet ni TV -- no cubierta por la regla, debe fallar fuerte
+    try:
+        crm.puntos_venta_directv({"incluye_internet": False, "incluye_tv": False, "forma_pago": "efectivo"})
+        raise AssertionError("debería haber lanzado ValueError para venta sin internet ni TV")
+    except ValueError:
+        pass
+
+
+async def caso_bono_rally_califica():
+    """6+ ventas Dúo y >=30% del total DirecTV en PAT/PAC -> +$100.000, sumado al sueldo por puntos."""
+    from agent import crm
+
+    ventas = [
+        {"incluye_internet": True, "incluye_tv": True, "forma_pago": "PAT/PAC"}
+        for _ in range(6)
+    ]
+    rally = crm.calcular_bono_rally_directv(ventas)
+    assert rally["ventas_duo"] == 6, rally
+    assert rally["porcentaje_pat_pac"] == 100.0, rally
+    assert rally["califica"] is True, rally
+    assert rally["bono"] == 100_000, rally
+
+    comision = crm.calcular_comision_directv(ventas)
+    assert comision["sueldo_total"] == comision["sueldo_por_puntos"] + 100_000, comision
+
+
+async def caso_bono_rally_no_califica_por_ventas_duo():
+    """5 ventas Dúo (todas PAT/PAC) -- no llega a las 6 requeridas, no califica aunque el % esté sobrado."""
+    from agent import crm
+
+    ventas = [
+        {"incluye_internet": True, "incluye_tv": True, "forma_pago": "PAT/PAC"}
+        for _ in range(5)
+    ]
+    rally = crm.calcular_bono_rally_directv(ventas)
+    assert rally["ventas_duo"] == 5, rally
+    assert rally["califica"] is False, rally
+    assert rally["bono"] == 0, rally
+
+
+async def caso_bono_rally_no_califica_por_porcentaje():
+    """6 ventas Dúo PAT/PAC + 15 solo efectivo -- 6/21 = 28.6% < 30%, no califica."""
+    from agent import crm
+
+    ventas = (
+        [{"incluye_internet": True, "incluye_tv": True, "forma_pago": "PAT/PAC"} for _ in range(6)]
+        + [{"incluye_internet": True, "incluye_tv": False, "forma_pago": "efectivo"} for _ in range(15)]
+    )
+    rally = crm.calcular_bono_rally_directv(ventas)
+    assert rally["ventas_duo"] == 6, rally
+    assert rally["total_ventas"] == 21, rally
+    assert rally["porcentaje_pat_pac"] < 30.0, rally
+    assert rally["califica"] is False, rally
+    assert rally["bono"] == 0, rally
+
+
+async def caso_bono_rally_boundary_30_porciento():
+    """6 ventas Dúo PAT/PAC + 14 solo efectivo -- 6/20 = exactamente 30%, sí califica (umbral inclusivo)."""
+    from agent import crm
+
+    ventas = (
+        [{"incluye_internet": True, "incluye_tv": True, "forma_pago": "PAT/PAC"} for _ in range(6)]
+        + [{"incluye_internet": True, "incluye_tv": False, "forma_pago": "efectivo"} for _ in range(14)]
+    )
+    rally = crm.calcular_bono_rally_directv(ventas)
+    assert rally["porcentaje_pat_pac"] == 30.0, rally
+    assert rally["califica"] is True, rally
+    assert rally["bono"] == 100_000, rally
+
+
+def _venta_duo(compania):
+    return {"compania": compania, "incluye_internet": True, "incluye_tv": True}
+
+
+def _venta_solo(compania):
+    return {"compania": compania, "incluye_internet": True, "incluye_tv": False}
+
+
+async def caso_comision_vtr_claro_tramo1():
+    """
+    25 RGU, todo dúo (tramo 1: 1-30). Nota: dúo aporta 2 RGU por venta, así
+    que 25 exacto no es alcanzable solo con dúo -- uso 24 RGU (12 ventas),
+    el total par más cercano, sin salir del tramo 1 (1-30).
+    """
+    from agent import crm
+
+    ventas = [_venta_duo("VTR") for _ in range(12)]  # 12 x 2 RGU = 24 RGU
+    resultado = crm.calcular_comision_vtr_claro(ventas)
+
+    assert resultado["rgu_total"] == 24, resultado
+    assert resultado["tarifa_duo"] == 70_000, resultado
+    assert resultado["total_final"] == 12 * 70_000, resultado
+    # En tramo 1, el pago inicial YA es la tarifa final -- no debería haber diferencia el día 5
+    assert resultado["diferencia_dia_5"] == 0, resultado
+
+
+async def caso_comision_vtr_claro_cruza_tramo2():
+    """
+    35 RGU (15 dúo = 30 RGU + 5 solo = 5 RGU) -> cruza a tramo 2 (31-50).
+    Verifica que la diferencia del día 5 se aplique a TODAS las ventas del
+    mes -- incluidas las 15 dúo Y las 5 solo -- no solo a una parte.
+    """
+    from agent import crm
+
+    ventas = [_venta_duo("VTR") for _ in range(15)] + [_venta_solo("Claro") for _ in range(5)]
+    resultado = crm.calcular_comision_vtr_claro(ventas)
+
+    assert resultado["rgu_total"] == 35, resultado
+    assert resultado["tarifa_duo"] == 75_000, resultado
+    assert resultado["tarifa_solo_internet"] == 45_000, resultado
+
+    total_final_esperado = 15 * 75_000 + 5 * 45_000
+    pago_inicial_esperado = 15 * 70_000 + 5 * 40_000  # tramo 1 (base) para las 20 ventas
+    assert resultado["total_final"] == total_final_esperado, resultado
+    assert resultado["pago_inicial"] == pago_inicial_esperado, resultado
+    assert resultado["diferencia_dia_5"] == total_final_esperado - pago_inicial_esperado, resultado
+
+
+async def caso_comision_vtr_claro_tramo3():
+    """55 RGU (25 dúo = 50 RGU + 5 solo = 5 RGU) -> tramo 3 (51+)."""
+    from agent import crm
+
+    ventas = [_venta_duo("VTR") for _ in range(25)] + [_venta_solo("VTR") for _ in range(5)]
+    resultado = crm.calcular_comision_vtr_claro(ventas)
+
+    assert resultado["rgu_total"] == 55, resultado
+    assert resultado["tarifa_duo"] == 80_000, resultado
+    assert resultado["tarifa_solo_internet"] == 50_000, resultado
+    assert resultado["total_final"] == 25 * 80_000 + 5 * 50_000, resultado
+
+
+async def caso_comision_movistar_tramo2():
+    """55 RGU de Movistar (27 dúo = 54 RGU + 1 solo = 1 RGU) -> tramo 2 (51+)."""
+    from agent import crm
+
+    ventas = [_venta_duo("Movistar") for _ in range(27)] + [_venta_solo("Movistar")]
+    resultado = crm.calcular_comision_movistar(ventas)
+
+    assert resultado["rgu_total"] == 55, resultado
+    assert resultado["tarifa_duo"] == 65_000, resultado
+    assert resultado["tarifa_solo_internet"] == 45_000, resultado
+    assert resultado["total_final"] == 27 * 65_000 + 1 * 45_000, resultado
+
+
+async def caso_comision_vtr_claro_ventas_mezcladas():
+    """
+    Ventas de VTR y Claro en el mismo mes deben sumar al mismo contador
+    combinado. Además confirma que una venta de Movistar metida por error
+    en el grupo VTR/Claro sea rechazada (no se mezcla en silencio).
+    """
+    from agent import crm
+
+    ventas = [_venta_duo("VTR") for _ in range(10)] + [_venta_solo("Claro") for _ in range(5)]
+    resultado = crm.calcular_comision_vtr_claro(ventas)
+
+    assert resultado["rgu_total"] == 25, resultado  # 10*2 + 5*1
+    assert resultado["cantidad_ventas"] == 15, resultado
+    assert resultado["total_final"] == 10 * 70_000 + 5 * 40_000, resultado
+
+    try:
+        crm.calcular_comision_vtr_claro(ventas + [_venta_duo("Movistar")])
+        raise AssertionError("debería haber rechazado una venta de Movistar en el grupo VTR/Claro")
+    except ValueError:
+        pass
+
+
 CASOS_DETERMINISTAS = [
     ("rango_fecha_chile límites correctos", caso_rango_fecha_chile),
     ("leads_nuevos con fixtures", caso_leads_nuevos_fixtures),
@@ -333,6 +560,20 @@ CASOS_DETERMINISTAS = [
     ("validación de campos obligatorios (carga)", caso_validar_campos_obligatorios),
     ("router dueño ejecuta TODAS las llamadas (mock)", caso_router_dueno_multi_llamada),
     ("sin fechas de vencimiento hardcodeadas", caso_sin_fechas_vencidas_hardcodeadas),
+    ("comisión DirecTV: menos de 14 puntos (proporcional)", caso_comision_directv_menos_de_14_puntos),
+    ("comisión DirecTV: exactamente 14 puntos ($350.000)", caso_comision_directv_exactamente_14_puntos),
+    ("comisión DirecTV: más de 14 puntos (extra por punto)", caso_comision_directv_mas_de_14_puntos),
+    ("comisión DirecTV: puntos venta Dúo + PAT/PAC", caso_puntos_venta_duo_con_pat_pac),
+    ("comisión DirecTV: puntos venta Solo + PAT/PAC", caso_puntos_venta_solo_con_pat_pac),
+    ("bono Rally DirecTV: califica (6 dúo, 100% PAT/PAC)", caso_bono_rally_califica),
+    ("bono Rally DirecTV: no califica por ventas dúo (5 < 6)", caso_bono_rally_no_califica_por_ventas_duo),
+    ("bono Rally DirecTV: no califica por % PAT/PAC (28.6% < 30%)", caso_bono_rally_no_califica_por_porcentaje),
+    ("bono Rally DirecTV: umbral exacto 30% (inclusivo)", caso_bono_rally_boundary_30_porciento),
+    ("comisión VTR/Claro: tramo 1 (24 RGU, todo dúo)", caso_comision_vtr_claro_tramo1),
+    ("comisión VTR/Claro: cruza a tramo 2, diferencia retroactiva", caso_comision_vtr_claro_cruza_tramo2),
+    ("comisión VTR/Claro: tramo 3 (55 RGU)", caso_comision_vtr_claro_tramo3),
+    ("comisión Movistar: tramo 2 (55 RGU)", caso_comision_movistar_tramo2),
+    ("comisión VTR/Claro: ventas mezcladas VTR+Claro", caso_comision_vtr_claro_ventas_mezcladas),
 ]
 
 

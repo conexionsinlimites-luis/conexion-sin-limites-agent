@@ -109,3 +109,52 @@ class ProveedorMeta(ProveedorWhatsApp):
             if r.status_code != 200:
                 raise RuntimeError(f"Meta API {r.status_code}: {r.text}")
             return True
+
+    async def enviar_documento(
+        self, telefono: str, contenido: bytes, nombre_archivo: str,
+        mime_type: str, caption: str = "",
+    ) -> bool:
+        """
+        Sube un archivo a la API de Meta (endpoint /media) y lo envía como
+        documento adjunto real — usado por la exportación del modo dueño
+        cuando el dueño pide "archivo" en vez de "chat".
+        """
+        if not self.access_token or not self.phone_number_id:
+            logger.warning("META_ACCESS_TOKEN o META_PHONE_NUMBER_ID no configurados")
+            return False
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        url_media = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/media"
+
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                url_media,
+                headers=headers,
+                data={"messaging_product": "whatsapp", "type": mime_type},
+                files={"file": (nombre_archivo, contenido, mime_type)},
+            )
+            if r.status_code != 200:
+                logger.error(f"Error subiendo documento a Meta: {r.status_code} — {r.text}")
+                return False
+            media_id = r.json().get("id")
+            if not media_id:
+                logger.error(f"Meta no devolvió media_id al subir documento: {r.text}")
+                return False
+
+            url_mensaje = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages"
+            documento: dict = {"id": media_id, "filename": nombre_archivo}
+            if caption:
+                documento["caption"] = caption
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": telefono,
+                "type": "document",
+                "document": documento,
+            }
+            r2 = await client.post(
+                url_mensaje, json=payload,
+                headers={**headers, "Content-Type": "application/json"},
+            )
+            if r2.status_code != 200:
+                logger.error(f"Error enviando documento por Meta: {r2.status_code} — {r2.text}")
+            return r2.status_code == 200

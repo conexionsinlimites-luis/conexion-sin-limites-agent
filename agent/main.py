@@ -7,6 +7,8 @@ Funciona con cualquier proveedor (Whapi, Meta, Twilio) gracias a la capa de prov
 """
 
 import re
+import csv
+import io
 import json
 import yaml
 import asyncio
@@ -666,6 +668,58 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
         },
     },
     {
+        "name": "buscar_venta_por_telefono",
+        "description": (
+            "Busca el registro COMPLETO de una venta (RUT, plan, dirección, "
+            "forma de pago, decos, extras, checklist operativo, etc.) por "
+            "teléfono. Úsala para preguntas de un campo puntual de una venta "
+            "ya cargada, ej. 'dame el RUT de ese cliente' o 'a qué dirección "
+            "va la instalación de Juan' — trae el registro completo y deja "
+            "que tú extraigas solo lo que se preguntó."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "telefono": {"type": "string", "description": "Número de teléfono mencionado."},
+            },
+            "required": ["telefono"],
+        },
+    },
+    {
+        "name": "buscar_venta_por_nombre",
+        "description": "Igual que buscar_venta_por_telefono, pero busca por coincidencia de nombre. Puede devolver varias ventas.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre o parte del nombre mencionado."},
+            },
+            "required": ["nombre"],
+        },
+    },
+    {
+        "name": "exportar_datos",
+        "description": (
+            "Úsala cuando el dueño pida 'exportar', 'dame todo', 'mándame la "
+            "lista completa', o similar, de ventas o leads en un período. "
+            "IMPORTANTE: esta herramienta NUNCA entrega los datos "
+            "directamente — solo registra qué quiere exportar. El sistema le "
+            "pregunta al dueño el formato (archivo o chat) antes de actuar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "que_exportar": {
+                    "type": "string",
+                    "enum": ["ventas", "leads"],
+                    "description": "Qué tabla exportar.",
+                },
+                "fecha_desde": {"type": "string", "description": "Fecha de inicio, YYYY-MM-DD, horario Chile."},
+                "fecha_hasta": {"type": "string", "description": "Fecha de fin, YYYY-MM-DD, SIEMPRE obligatoria."},
+            },
+            "required": ["que_exportar", "fecha_desde", "fecha_hasta"],
+        },
+    },
+    {
         "name": "consultar_catalogo",
         "description": (
             "Responde preguntas sobre el catálogo de planes y precios "
@@ -698,13 +752,37 @@ _HERRAMIENTAS_CONSULTA_DUEÑO = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "comision_mes",
+        "description": (
+            "Calcula la comisión/sueldo del mes combinando las 3 reglas "
+            "confirmadas (DirecTV por puntos, VTR+Claro y Movistar por "
+            "RGU), usando las ventas reales cargadas en el sistema en ese "
+            "período. Úsala para '¿cuánto es mi comisión este mes?', "
+            "'¿cuánto llevo de sueldo?', '¿cómo voy este mes?'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "fecha_desde": {"type": "string", "description": "Fecha de inicio, YYYY-MM-DD, horario Chile."},
+                "fecha_hasta": {
+                    "type": "string",
+                    "description": (
+                        "Fecha de fin, YYYY-MM-DD, SIEMPRE obligatoria. Para 'este mes', usa "
+                        "el día 1 del mes actual como fecha_desde y hoy como fecha_hasta."
+                    ),
+                },
+            },
+            "required": ["fecha_desde", "fecha_hasta"],
+        },
+    },
+    {
         "name": "dato_no_registrado",
         "description": (
             "Úsala cuando la pregunta del dueño NO se puede responder con "
             "ningún dato real disponible en el sistema (ej. pendientes de "
             "llamar, desglose de ventas por producto, proyecciones de "
-            "ingresos, comisiones). Nunca inventes ni estimes un número — "
-            "usa esta función en su lugar."
+            "ingresos). Nunca inventes ni estimes un número — usa esta "
+            "función en su lugar."
         ),
         "input_schema": {
             "type": "object",
@@ -803,7 +881,7 @@ async def _ejecutar_consulta_dueño(nombre_funcion: str, parametros: dict) -> di
     """Ejecuta contra el CRM la función elegida por el router y devuelve datos crudos."""
     hoy_chile = datetime.now(_ZONA_CHILE).strftime("%Y-%m-%d")
 
-    if nombre_funcion in ("leads_nuevos", "contactos_activos", "ventas_cerradas"):
+    if nombre_funcion in ("leads_nuevos", "contactos_activos", "ventas_cerradas", "comision_mes"):
         # Red de seguridad: fecha_hasta ya es obligatoria en el schema, pero
         # si igual llega vacía, un rango amplio (hasta hoy) es un fallo más
         # seguro que uno angosto (= fecha_desde, que puede excluir días
@@ -820,6 +898,14 @@ async def _ejecutar_consulta_dueño(nombre_funcion: str, parametros: dict) -> di
     if nombre_funcion == "buscar_lead_por_nombre":
         leads = await crm.buscar_lead_por_nombre(parametros.get("nombre", ""))
         return {"total": len(leads), "leads": leads}
+
+    if nombre_funcion == "buscar_venta_por_telefono":
+        venta = await crm.buscar_venta_por_telefono(parametros.get("telefono", ""))
+        return {"encontrada": venta is not None, "venta": venta}
+
+    if nombre_funcion == "buscar_venta_por_nombre":
+        ventas = await crm.buscar_venta_por_nombre(parametros.get("nombre", ""))
+        return {"total": len(ventas), "ventas": ventas}
 
     if nombre_funcion == "respondieron_envio_masivo":
         return await crm.contar_respondieron_envio_masivo()
@@ -896,9 +982,21 @@ async def _formatear_respuesta_dueño(pregunta: str, resultados: list[tuple[str,
     return "Tuve un problema generando la respuesta."
 
 
-async def _responder_consulta_dueño(pregunta: str) -> str:
-    """Orquesta las 2 llamadas del motor de consulta abierta (Parte 4)."""
+async def _responder_consulta_dueño(pregunta: str, telefono: str) -> str:
+    """
+    Orquesta las 2 llamadas del motor de consulta abierta (Parte 4).
+    exportar_datos es un caso especial: no se ejecuta de inmediato — se
+    guarda la intención en _EXPORT_PENDIENTE y se pregunta el formato
+    primero (ver Parte 5, _procesar_mensaje_dueño la resuelve en el
+    siguiente turno).
+    """
     llamadas = await _rutear_consulta_dueño(pregunta)
+
+    llamada_export = next((l for l in llamadas if l[0] == "exportar_datos"), None)
+    if llamada_export:
+        _EXPORT_PENDIENTE[telefono] = llamada_export[1]
+        return "¿Lo quieres como archivo (CSV/Excel) o te lo muestro aquí en el chat?"
+
     resultados = []
     for nombre_funcion, parametros in llamadas:
         datos = await _ejecutar_consulta_dueño(nombre_funcion, parametros)
@@ -915,12 +1013,23 @@ _CARGA_PENDIENTE: dict[str, dict] = {}
 _PALABRAS_CONFIRMACION = {"si", "sí", "confirmar", "confirmo", "dale", "ok", "okay", "correcto"}
 _PALABRAS_CANCELACION = {"no", "cancelar", "cancela", "cancelalo", "cancélalo"}
 
+# Exportación pendiente por número de dueño — mismo patrón y misma
+# limitación que _CARGA_PENDIENTE (en memoria, se pierde si Railway
+# redespliega entre la pregunta de formato y la respuesta).
+_EXPORT_PENDIENTE: dict[str, dict] = {}
+_PALABRAS_FORMATO_ARCHIVO = {"archivo", "csv", "excel", "documento", "adjunto"}
+_PALABRAS_FORMATO_CHAT = {"chat", "aqui", "aquí", "mostrar", "muestramelo", "muéstramelo", "texto", "aca", "acá"}
+
 _ETIQUETAS_CAMPOS = {
     "telefono": "el teléfono",
     "nombre": "el nombre",
     "producto": "el producto/compañía",
     "comuna": "la comuna",
     "direccion": "la dirección",
+    "rut": "el RUT (verificación de identidad)",
+    "internet_o_tv": "si incluye internet, TV, o ambos (dúo)",
+    "forma_pago": "la forma de pago (PAT/PAC, efectivo, tarjeta o cuenta)",
+    "carnet_foto_recibida": "si ya tienes la foto del carnet del cliente",
 }
 
 _HERRAMIENTA_CARGA_DUEÑO = {
@@ -939,17 +1048,50 @@ _HERRAMIENTA_CARGA_DUEÑO = {
             },
             "nombre": {"type": "string", "description": "Nombre del cliente, si se menciona."},
             "telefono": {"type": "string", "description": "Teléfono del cliente, solo dígitos, con código de país (ej. 56912345678)."},
+            "rut": {
+                "type": "string",
+                "description": "RUT del cliente, para verificación de identidad. Obligatorio si tipo=venta.",
+            },
             "producto": {
                 "type": "string",
                 "enum": ["DirecTV", "VTR", "Movistar", "Claro", "Entel", "WOM", "otro"],
                 "description": "Compañía/producto mencionado, si se menciona.",
             },
+            "incluye_internet": {
+                "type": "boolean",
+                "description": "true si la venta incluye Internet. Solo relevante si tipo=venta.",
+            },
+            "incluye_tv": {
+                "type": "boolean",
+                "description": "true si la venta incluye TV. Solo relevante si tipo=venta.",
+            },
+            "forma_pago": {
+                "type": "string",
+                "enum": ["PAT/PAC", "efectivo", "tarjeta", "cuenta"],
+                "description": "Forma de pago de la venta. Obligatorio siempre que tipo=venta (afecta el bono Rally y es un dato general útil, sin importar la compañía).",
+            },
+            "carnet_foto_recibida": {
+                "type": "boolean",
+                "description": "true si el dueño confirma que ya tiene la foto del carnet del cliente. SOLO relevante si producto=VTR o producto=Movistar — para DirecTV no se pide, el RUT solo ya alcanza.",
+            },
             "comuna": {"type": "string"},
             "direccion": {"type": "string"},
+            "calle": {"type": "string", "description": "Calle de la dirección de instalación, si se menciona por separado."},
+            "numero": {"type": "string", "description": "Número de la dirección de instalación, si se menciona por separado."},
+            "decos_adicionales": {"type": "integer", "description": "Cantidad de decodificadores adicionales vendidos, si se menciona."},
+            "extras": {"type": "string", "description": "Extras vendidos aparte del plan base, en texto libre (ej. 'extensor wifi'), si se menciona."},
+            "monto_venta": {"type": "integer", "description": "Monto mensual de la venta en pesos chilenos, si se menciona."},
+            "fecha_instalacion_estimada": {"type": "string", "description": "Fecha estimada de instalación, formato YYYY-MM-DD, si se menciona."},
             "campos_faltantes": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Nombres de campos importantes que el dueño todavía no mencionó (ej. ['telefono']). telefono y nombre siempre son importantes; producto es importante solo si tipo=venta.",
+                "description": (
+                    "Nombres de campos importantes que el dueño todavía no mencionó (ej. "
+                    "['telefono']). telefono y nombre siempre son importantes. Si tipo=venta, "
+                    "también son importantes: producto, rut, si incluye internet y/o TV "
+                    "(usa 'internet_o_tv' si falta), forma_pago (siempre), y "
+                    "carnet_foto_recibida SOLO si producto=VTR o producto=Movistar."
+                ),
             },
             "listo_para_confirmar": {
                 "type": "boolean",
@@ -1002,8 +1144,30 @@ def _validar_campos_obligatorios(datos: dict) -> list[str]:
         faltantes.append("telefono")
     if not datos.get("nombre") and "nombre" not in faltantes:
         faltantes.append("nombre")
-    if datos.get("tipo") == "venta" and not datos.get("producto") and "producto" not in faltantes:
-        faltantes.append("producto")
+
+    if datos.get("tipo") == "venta":
+        if not datos.get("producto") and "producto" not in faltantes:
+            faltantes.append("producto")
+        if not datos.get("rut") and "rut" not in faltantes:
+            faltantes.append("rut")
+        if (
+            datos.get("incluye_internet") is None
+            and datos.get("incluye_tv") is None
+            and "internet_o_tv" not in faltantes
+        ):
+            faltantes.append("internet_o_tv")
+        # forma_pago ahora es obligatorio siempre (afecta el bono Rally de
+        # DirecTV, y es un dato general útil sin importar la compañía).
+        if not datos.get("forma_pago") and "forma_pago" not in faltantes:
+            faltantes.append("forma_pago")
+
+        # carnet_foto_recibida SOLO se pide para VTR/Movistar -- para
+        # DirecTV el RUT solo ya alcanza para verificación de identidad.
+        producto_lower = (datos.get("producto") or "").strip().lower()
+        if producto_lower in ("vtr", "movistar"):
+            if datos.get("carnet_foto_recibida") is None and "carnet_foto_recibida" not in faltantes:
+                faltantes.append("carnet_foto_recibida")
+
     return faltantes
 
 
@@ -1014,10 +1178,41 @@ def _texto_confirmacion_carga(datos: dict) -> str:
         lineas.append(f"Nombre: {datos['nombre']}")
     if datos.get("telefono"):
         lineas.append(f"Teléfono: {datos['telefono']}")
+    if datos.get("rut"):
+        lineas.append(f"RUT: {datos['rut']}")
     if datos.get("producto"):
         lineas.append(f"Producto: {datos['producto']}")
-    if datos.get("comuna"):
-        lineas.append(f"Comuna: {datos['comuna']}")
+    if datos.get("tipo") == "venta":
+        incluye = []
+        if datos.get("incluye_internet"):
+            incluye.append("Internet")
+        if datos.get("incluye_tv"):
+            incluye.append("TV")
+        if incluye:
+            etiqueta = "Dúo" if len(incluye) == 2 else f"Solo {incluye[0]}"
+            lineas.append(f"Incluye: {' + '.join(incluye)} ({etiqueta})")
+        if datos.get("forma_pago"):
+            lineas.append(f"Forma de pago: {datos['forma_pago']}")
+        if datos.get("decos_adicionales"):
+            lineas.append(f"Decos adicionales: {datos['decos_adicionales']}")
+        if datos.get("extras"):
+            lineas.append(f"Extras: {datos['extras']}")
+        if datos.get("monto_venta"):
+            lineas.append(f"Monto: ${datos['monto_venta']:,}".replace(",", "."))
+        if datos.get("fecha_instalacion_estimada"):
+            lineas.append(f"Instalación estimada: {datos['fecha_instalacion_estimada']}")
+        producto_lower = (datos.get("producto") or "").strip().lower()
+        if producto_lower in ("vtr", "movistar"):
+            estado_carnet = "sí" if datos.get("carnet_foto_recibida") else "no"
+            lineas.append(f"Foto del carnet recibida: {estado_carnet}")
+    if datos.get("calle") or datos.get("numero") or datos.get("comuna"):
+        partes_dir = " ".join(p for p in [datos.get("calle"), datos.get("numero")] if p)
+        if partes_dir and datos.get("comuna"):
+            lineas.append(f"Dirección: {partes_dir}, {datos['comuna']}")
+        elif partes_dir:
+            lineas.append(f"Dirección: {partes_dir}")
+        elif datos.get("comuna"):
+            lineas.append(f"Comuna: {datos['comuna']}")
     if datos.get("direccion"):
         lineas.append(f"Dirección: {datos['direccion']}")
     lineas.append("")
@@ -1057,6 +1252,25 @@ async def _ejecutar_carga_dueño(datos: dict) -> str:
     ya_existia = (await crm.obtener_lead(telefono)) is not None
     await crm.crear_o_actualizar_lead(telefono, nombre=nombre, **kwargs)
 
+    if datos.get("tipo") == "venta":
+        await crm.registrar_venta(
+            telefono=telefono,
+            compania=producto,
+            incluye_internet=bool(datos.get("incluye_internet")),
+            incluye_tv=bool(datos.get("incluye_tv")),
+            rut=datos.get("rut"),
+            forma_pago=datos.get("forma_pago"),
+            nombre=nombre,
+            calle=datos.get("calle"),
+            numero=datos.get("numero"),
+            comuna=datos.get("comuna"),
+            decos_adicionales=datos.get("decos_adicionales") or 0,
+            extras=datos.get("extras"),
+            monto_venta=datos.get("monto_venta"),
+            fecha_instalacion_estimada=datos.get("fecha_instalacion_estimada"),
+            carnet_foto_recibida=bool(datos.get("carnet_foto_recibida")),
+        )
+
     accion = "actualicé el lead existente" if ya_existia else "creé un lead nuevo"
     return f"Listo, {accion} para {nombre or telefono} ✅"
 
@@ -1093,6 +1307,62 @@ def _detectar_cambio_modo_producto(texto_lower: str) -> str | None:
     return None
 
 
+# ── Parte 5 — exportar ventas/leads, preguntando el formato primero ───────
+
+def _generar_csv(filas: list[dict]) -> bytes:
+    """CSV con BOM (para que Excel abra bien los acentos) a partir de una lista de dicts."""
+    if not filas:
+        return b""
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=list(filas[0].keys()))
+    writer.writeheader()
+    for fila in filas:
+        writer.writerow({k: ("" if v is None else v) for k, v in fila.items()})
+    return output.getvalue().encode("utf-8-sig")
+
+
+def _texto_resumen_export(filas: list[dict], limite: int = 15) -> str:
+    """Resumen legible en texto plano para el formato 'chat' — sin pasar por Haiku, para no arriesgar que reformatee mal un número."""
+    lineas = [f"{len(filas)} resultado(s):", ""]
+    for fila in filas[:limite]:
+        resumen_fila = ", ".join(f"{k}: {v}" for k, v in fila.items() if v not in (None, "", False))
+        lineas.append(f"• {resumen_fila}")
+    if len(filas) > limite:
+        lineas.append(f"\n...y {len(filas) - limite} más (pide 'archivo' para verlos todos).")
+    return "\n".join(lineas)
+
+
+async def _ejecutar_exportacion(parametros: dict, formato: str, telefono_destino: str) -> str:
+    """Genera y entrega la exportación pendiente, en el formato que eligió el dueño."""
+    que = parametros.get("que_exportar")
+    fecha_desde = parametros.get("fecha_desde")
+    fecha_hasta = parametros.get("fecha_hasta")
+
+    if que == "ventas":
+        filas = await crm.exportar_ventas(fecha_desde, fecha_hasta)
+    elif que == "leads":
+        filas = await crm.exportar_leads(fecha_desde, fecha_hasta)
+    else:
+        return "No me quedó claro qué exportar — ¿ventas o leads?"
+
+    if not filas:
+        return f"No hay {que} en ese período — nada que exportar."
+
+    if formato == "chat":
+        return _texto_resumen_export(filas)
+
+    # formato == "archivo"
+    csv_bytes = _generar_csv(filas)
+    nombre_archivo = f"{que}_{fecha_desde}_a_{fecha_hasta or fecha_desde}.csv"
+    enviado = await proveedor.enviar_documento(
+        telefono_destino, csv_bytes, nombre_archivo, "text/csv",
+        caption=f"{len(filas)} {que} del período {fecha_desde} al {fecha_hasta or fecha_desde}",
+    )
+    if enviado:
+        return "Listo, te mandé el archivo 📎"
+    return "Tuve un problema mandando el archivo. Te lo muestro aquí en el chat en su lugar:\n\n" + _texto_resumen_export(filas)
+
+
 async def _procesar_mensaje_dueño(telefono: str, texto: str):
     """
     Modo dueño — mensajes desde cualquiera de los dos números del dueño
@@ -1107,14 +1377,31 @@ async def _procesar_mensaje_dueño(telefono: str, texto: str):
 
     try:
         pendiente = _CARGA_PENDIENTE.get(telefono)
+        pendiente_export = _EXPORT_PENDIENTE.get(telefono)
 
-        # Modo producto tiene prioridad, salvo que haya una carga en curso
-        # (para no confundir texto de la carga con un cambio de modo).
-        modo_nuevo = None if pendiente else _detectar_cambio_modo_producto(texto_lower)
+        # Modo producto tiene prioridad, salvo que haya una carga o una
+        # exportación en curso (para no confundir texto pendiente con un
+        # cambio de modo).
+        modo_nuevo = None if (pendiente or pendiente_export) else _detectar_cambio_modo_producto(texto_lower)
 
         if modo_nuevo:
             await prompt_builder.actualizar_modo_producto(modo_nuevo, cliente_slug=CLIENTE_SLUG)
             respuesta = f"Listo, modo de producto activo: {prompt_builder.NOMBRE_MODO[modo_nuevo]} ✅"
+
+        elif pendiente_export and _keyword_match(texto_lower, _PALABRAS_FORMATO_ARCHIVO):
+            respuesta = await _ejecutar_exportacion(pendiente_export, "archivo", telefono)
+            del _EXPORT_PENDIENTE[telefono]
+
+        elif pendiente_export and _keyword_match(texto_lower, _PALABRAS_FORMATO_CHAT):
+            respuesta = await _ejecutar_exportacion(pendiente_export, "chat", telefono)
+            del _EXPORT_PENDIENTE[telefono]
+
+        elif pendiente_export and texto_lower in _PALABRAS_CANCELACION:
+            del _EXPORT_PENDIENTE[telefono]
+            respuesta = "Cancelado, no exporté nada."
+
+        elif pendiente_export:
+            respuesta = "¿Lo quieres como archivo (CSV/Excel) o te lo muestro aquí en el chat?"
 
         elif pendiente and texto_lower in _PALABRAS_CONFIRMACION:
             respuesta = await _ejecutar_carga_dueño(pendiente["datos"])
@@ -1136,7 +1423,7 @@ async def _procesar_mensaje_dueño(telefono: str, texto: str):
                 respuesta = _texto_confirmacion_carga(datos)
 
         else:
-            respuesta = await _responder_consulta_dueño(texto_original)
+            respuesta = await _responder_consulta_dueño(texto_original, telefono)
 
     except Exception as e:
         _log("ERROR", f"Modo dueño: error procesando mensaje de {telefono}: {e}")

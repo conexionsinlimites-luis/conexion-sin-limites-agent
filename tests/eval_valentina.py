@@ -293,6 +293,186 @@ async def caso_validar_campos_obligatorios():
     assert "carnet_foto_recibida" not in _validar_campos_obligatorios(directv_completo)
 
 
+async def caso_carga_pendiente_mensaje_no_relacionado():
+    """
+    Regresión del bug real: con una carga pendiente, un mensaje que el
+    extractor marca como mensaje_no_relacionado NO debe pisar los datos
+    pendientes -- la respuesta debe avisar del pendiente Y atender el
+    mensaje nuevo, nunca ignorarlo repitiendo solo la pregunta vieja.
+    """
+    import agent.main as main
+
+    telefono = "eval-test-carga-no-relacionado"
+    datos_previos = {
+        "tipo": "venta", "nombre": "Pedro Ramirez", "telefono": "56911112222",
+        "producto": "VTR", "incluye_internet": True, "incluye_tv": True,
+        "forma_pago": "efectivo", "rut": "11.111.111-1",
+        "campos_faltantes": ["carnet_foto_recibida"], "listo_para_confirmar": False,
+    }
+    main._CARGA_PENDIENTE[telefono] = {"datos": datos_previos, "listo": False}
+
+    bloque = SimpleNamespace(
+        type="tool_use", name="registrar_carga",
+        input={**datos_previos, "mensaje_no_relacionado": True},
+    )
+    respuesta_extraccion_falsa = SimpleNamespace(content=[bloque])
+
+    async def _fake_create(*args, **kwargs):
+        return respuesta_extraccion_falsa
+
+    mensajes_enviados = []
+
+    async def _fake_enviar_mensaje(tel, mensaje):
+        mensajes_enviados.append((tel, mensaje))
+        return True
+
+    original_create = main.claude_client.messages.create
+    original_enviar = main.proveedor.enviar_mensaje
+    main.claude_client.messages.create = _fake_create
+    main.proveedor.enviar_mensaje = _fake_enviar_mensaje
+    try:
+        await main._procesar_mensaje_dueño(telefono, "gracias")
+        assert telefono in main._CARGA_PENDIENTE, "la carga pendiente no debería haberse perdido"
+        assert main._CARGA_PENDIENTE[telefono]["datos"] == datos_previos, "los datos pendientes no deberían cambiar"
+    finally:
+        main.claude_client.messages.create = original_create
+        main.proveedor.enviar_mensaje = original_enviar
+        main._CARGA_PENDIENTE.pop(telefono, None)
+
+    assert len(mensajes_enviados) == 1, mensajes_enviados
+    texto_enviado = mensajes_enviados[0][1]
+    assert "Pedro Ramirez" in texto_enviado, texto_enviado
+    assert "pendiente" in texto_enviado.lower(), texto_enviado
+    assert "De nada" in texto_enviado, texto_enviado
+
+
+async def caso_carga_pendiente_si_incompleto_no_ejecuta_de_una():
+    """
+    Regresión: con campos_faltantes todavía pendientes (ej.
+    carnet_foto_recibida), un "sí" del dueño NO debe guardar la venta de
+    inmediato -- debe completar el campo que faltaba y mostrar la ficha
+    final de confirmación, esperando un "sí" SEPARADO para recién guardar.
+    """
+    import agent.main as main
+
+    telefono = "eval-test-carga-si-incompleto"
+    datos_previos = {
+        "tipo": "venta", "nombre": "Maria Torres", "telefono": "56933334444",
+        "producto": "Movistar", "incluye_internet": True, "incluye_tv": False,
+        "forma_pago": "PAT/PAC", "rut": "22.222.222-2",
+        "campos_faltantes": ["carnet_foto_recibida"], "listo_para_confirmar": False,
+    }
+    main._CARGA_PENDIENTE[telefono] = {"datos": datos_previos, "listo": False}
+
+    datos_completados = {
+        **datos_previos, "carnet_foto_recibida": True,
+        "campos_faltantes": [], "listo_para_confirmar": True,
+    }
+    bloque = SimpleNamespace(type="tool_use", name="registrar_carga", input=datos_completados)
+    respuesta_falsa = SimpleNamespace(content=[bloque])
+
+    async def _fake_create(*args, **kwargs):
+        return respuesta_falsa
+
+    llamadas_registrar_venta = []
+
+    async def _fake_registrar_venta(**kwargs):
+        llamadas_registrar_venta.append(kwargs)
+
+    mensajes_enviados = []
+
+    async def _fake_enviar_mensaje(tel, mensaje):
+        mensajes_enviados.append((tel, mensaje))
+        return True
+
+    original_create = main.claude_client.messages.create
+    original_registrar = main.crm.registrar_venta
+    original_enviar = main.proveedor.enviar_mensaje
+    main.claude_client.messages.create = _fake_create
+    main.crm.registrar_venta = _fake_registrar_venta
+    main.proveedor.enviar_mensaje = _fake_enviar_mensaje
+    try:
+        await main._procesar_mensaje_dueño(telefono, "si ya la tengo")
+        assert not llamadas_registrar_venta, "no debería haber guardado la venta todavía, solo completar el campo"
+        assert main._CARGA_PENDIENTE[telefono]["listo"] is True, main._CARGA_PENDIENTE.get(telefono)
+    finally:
+        main.claude_client.messages.create = original_create
+        main.crm.registrar_venta = original_registrar
+        main.proveedor.enviar_mensaje = original_enviar
+        main._CARGA_PENDIENTE.pop(telefono, None)
+
+    assert len(mensajes_enviados) == 1, mensajes_enviados
+    assert "confirmas" in mensajes_enviados[0][1].lower(), mensajes_enviados
+
+
+async def caso_carga_pendiente_si_completo_ejecuta():
+    """Cuando la ficha final ya está lista (listo=True), un 'sí' SÍ debe ejecutar/guardar."""
+    import agent.main as main
+
+    telefono = "eval-test-carga-si-completo"
+    datos_listos = {
+        "tipo": "venta", "nombre": "Juan Perez", "telefono": "56955556666",
+        "producto": "DirecTV", "incluye_internet": True, "incluye_tv": True,
+        "forma_pago": "PAT/PAC", "rut": "33.333.333-3",
+        "campos_faltantes": [], "listo_para_confirmar": True,
+    }
+    main._CARGA_PENDIENTE[telefono] = {"datos": datos_listos, "listo": True}
+
+    llamadas_ejecutar = []
+
+    async def _fake_ejecutar_carga(datos):
+        llamadas_ejecutar.append(datos)
+        return "Listo, creé un lead nuevo para Juan Pérez ✅"
+
+    mensajes_enviados = []
+
+    async def _fake_enviar_mensaje(tel, mensaje):
+        mensajes_enviados.append((tel, mensaje))
+        return True
+
+    original_ejecutar = main._ejecutar_carga_dueño
+    original_enviar = main.proveedor.enviar_mensaje
+    main._ejecutar_carga_dueño = _fake_ejecutar_carga
+    main.proveedor.enviar_mensaje = _fake_enviar_mensaje
+    try:
+        await main._procesar_mensaje_dueño(telefono, "si")
+    finally:
+        main._ejecutar_carga_dueño = original_ejecutar
+        main.proveedor.enviar_mensaje = original_enviar
+        main._CARGA_PENDIENTE.pop(telefono, None)
+
+    assert len(llamadas_ejecutar) == 1, llamadas_ejecutar
+    assert telefono not in main._CARGA_PENDIENTE
+
+
+async def caso_cancelacion_carga_frase_completa():
+    """
+    'cancela eso' y 'olvida esa carga' deben cancelar la carga pendiente --
+    antes solo funcionaban las palabras sueltas exactas ('no', 'cancelar').
+    """
+    import agent.main as main
+
+    for frase in ["cancela eso", "olvida esa carga", "cancelar por favor"]:
+        telefono = "eval-test-cancelacion-frase"
+        main._CARGA_PENDIENTE[telefono] = {"datos": {"nombre": "Test"}, "listo": False}
+
+        mensajes_enviados = []
+
+        async def _fake_enviar_mensaje(tel, mensaje):
+            mensajes_enviados.append((tel, mensaje))
+            return True
+
+        original_enviar = main.proveedor.enviar_mensaje
+        main.proveedor.enviar_mensaje = _fake_enviar_mensaje
+        try:
+            await main._procesar_mensaje_dueño(telefono, frase)
+        finally:
+            main.proveedor.enviar_mensaje = original_enviar
+            main._CARGA_PENDIENTE.pop(telefono, None)
+
+        assert mensajes_enviados == [(telefono, "Cancelado, no se guardó nada.")], (frase, mensajes_enviados)
+
+
 async def caso_router_dueno_multi_llamada():
     import agent.main as main
 
@@ -750,6 +930,10 @@ CASOS_DETERMINISTAS = [
     ("extracción [ALERTA_SUPERVISOR]", caso_extraer_alerta_supervisor),
     ("extracción [ALERTA_DUDA]", caso_extraer_alerta_duda),
     ("validación de campos obligatorios (carga)", caso_validar_campos_obligatorios),
+    ("carga pendiente: mensaje no relacionado no la pisa (regresión)", caso_carga_pendiente_mensaje_no_relacionado),
+    ("carga pendiente: 'sí' incompleto no ejecuta de una (regresión)", caso_carga_pendiente_si_incompleto_no_ejecuta_de_una),
+    ("carga pendiente: 'sí' completo sí ejecuta", caso_carga_pendiente_si_completo_ejecuta),
+    ("cancelación de carga por frase completa", caso_cancelacion_carga_frase_completa),
     ("router dueño ejecuta TODAS las llamadas (mock)", caso_router_dueno_multi_llamada),
     ("historial dueño respeta el límite de turnos", caso_historial_dueño_limite_turnos),
     ("router sin historial manda solo la pregunta actual", caso_router_sin_historial_previo),

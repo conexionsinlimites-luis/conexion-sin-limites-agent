@@ -1051,6 +1051,15 @@ _CARGA_PENDIENTE: dict[str, dict] = {}
 _PALABRAS_CONFIRMACION = {"si", "sí", "confirmar", "confirmo", "dale", "ok", "okay", "correcto"}
 _PALABRAS_CANCELACION = {"no", "cancelar", "cancela", "cancelalo", "cancélalo"}
 
+# Cancelación de una carga pendiente por frase completa (ej. "cancela eso",
+# "olvida esa carga") -- a diferencia de _PALABRAS_CANCELACION (coincidencia
+# exacta del mensaje completo), esto matchea por palabra dentro de una frase.
+_KEYWORDS_CANCELAR_CARGA = ["cancela", "cancelar", "olvida", "olvídalo", "olvidalo", "olvídala", "olvidala"]
+
+
+def _es_cancelacion_carga(texto_lower: str) -> bool:
+    return texto_lower in _PALABRAS_CANCELACION or _keyword_match(texto_lower, _KEYWORDS_CANCELAR_CARGA)
+
 # Exportación pendiente por número de dueño — mismo patrón y misma
 # limitación que _CARGA_PENDIENTE (en memoria, se pierde si Railway
 # redespliega entre la pregunta de formato y la respuesta).
@@ -1135,6 +1144,16 @@ _HERRAMIENTA_CARGA_DUEÑO = {
                 "type": "boolean",
                 "description": "true solo si ya no faltan campos importantes.",
             },
+            "mensaje_no_relacionado": {
+                "type": "boolean",
+                "description": (
+                    "true SOLO cuando hay una carga pendiente en curso Y el mensaje nuevo del "
+                    "dueño NO tiene relación con completarla — es una pregunta o comando "
+                    "distinto (ej. pedir un reporte, la comisión, exportar datos, u otra "
+                    "carga). Si es true, deja los demás campos igual a los de "
+                    "'datos ya recopilados' — no inventes ni cambies nada."
+                ),
+            },
         },
         "required": ["tipo", "campos_faltantes", "listo_para_confirmar"],
     },
@@ -1162,7 +1181,13 @@ async def _extraer_carga_dueño(mensaje_nuevo: str, datos_previos: dict | None) 
             "Extraes datos estructurados de mensajes del dueño de Conexión Sin "
             "Límites, que está cargando manualmente una venta cerrada o un lead "
             "nuevo al CRM por WhatsApp. Usa SIEMPRE la herramienta registrar_carga. "
-            "NUNCA inventes ni asumas datos que el dueño no mencionó explícitamente."
+            "NUNCA inventes ni asumas datos que el dueño no mencionó explícitamente. "
+            "Si hay 'datos ya recopilados' (una carga en curso) y el mensaje nuevo "
+            "claramente pregunta o pide algo distinto (un reporte, la comisión, "
+            "exportar, otra carga, etc.) — no una respuesta a lo que falta — marca "
+            "mensaje_no_relacionado=true. Una confirmación breve como 'sí', 'ya la "
+            "tengo', 'no' respondiendo a la pregunta pendiente SÍ es continuar la "
+            "carga, no marques mensaje_no_relacionado en ese caso."
         ),
         tools=[_HERRAMIENTA_CARGA_DUEÑO],
         tool_choice={"type": "tool", "name": "registrar_carga"},
@@ -1266,6 +1291,27 @@ def _texto_pregunta_faltantes(datos: dict, faltantes: list[str]) -> str:
     ]
     resumen = ("Hasta ahora tengo: " + ", ".join(conocido) + ".\n\n") if conocido else ""
     return f"{resumen}Me falta {pedir}. ¿Me lo pasas?"
+
+
+def _texto_aviso_carga_pendiente(datos_previos: dict) -> str:
+    referencia = datos_previos.get("nombre") or datos_previos.get("telefono") or "una venta"
+    return f"Tienes pendiente confirmar la carga de {referencia} — ¿la retomamos o la cancelamos?"
+
+
+async def _resolver_mensaje_no_carga(texto_original: str, texto_lower: str, telefono: str) -> str:
+    """
+    Responde un mensaje que llegó mientras había una carga pendiente, pero
+    que el propio extractor determinó que NO tiene relación con completarla
+    -- se procesa igual que si no hubiera nada pendiente (cortesía o motor
+    de consulta). Una carga NUEVA es la única excepción: no se puede tener
+    dos cargas pendientes a la vez para el mismo número, así que se pide
+    resolver la actual primero en vez de empezar otra en paralelo.
+    """
+    if _keyword_match(texto_lower, ["carga", "cargar"]):
+        return "Primero resolvamos la pendiente, después cargamos esta."
+    if _es_cortesia(texto_lower):
+        return _respuesta_cortesia(texto_lower)
+    return await _responder_consulta_dueño(texto_original, telefono)
 
 
 async def _ejecutar_carga_dueño(datos: dict) -> str:
@@ -1472,20 +1518,37 @@ async def _procesar_mensaje_dueño(telefono: str, texto: str):
         elif pendiente_export:
             respuesta = "¿Lo quieres como archivo (CSV/Excel) o te lo muestro aquí en el chat?"
 
-        elif pendiente and texto_lower in _PALABRAS_CONFIRMACION:
+        elif pendiente and pendiente.get("listo") and texto_lower in _PALABRAS_CONFIRMACION:
             respuesta = await _ejecutar_carga_dueño(pendiente["datos"])
             del _CARGA_PENDIENTE[telefono]
 
-        elif pendiente and texto_lower in _PALABRAS_CANCELACION:
+        elif pendiente and _es_cancelacion_carga(texto_lower):
             del _CARGA_PENDIENTE[telefono]
             respuesta = "Cancelado, no se guardó nada."
 
-        elif pendiente or _keyword_match(texto_lower, ["carga", "cargar"]):
-            datos = await _extraer_carga_dueño(
-                texto_original, pendiente["datos"] if pendiente else None
-            )
+        elif pendiente:
+            # No basta con que haya algo pendiente -- el extractor decide si
+            # este mensaje realmente continúa esa carga o es otra cosa
+            # (mensaje_no_relacionado). Antes, CUALQUIER mensaje con una
+            # carga pendiente se trataba como respuesta a ella, aunque fuera
+            # "cuánto es mi comisión" -- ignorando la pregunta real.
+            datos = await _extraer_carga_dueño(texto_original, pendiente["datos"])
+            if datos.get("mensaje_no_relacionado"):
+                aviso = _texto_aviso_carga_pendiente(pendiente["datos"])
+                respuesta_nueva = await _resolver_mensaje_no_carga(texto_original, texto_lower, telefono)
+                respuesta = f"{aviso}\n\n{respuesta_nueva}" if respuesta_nueva else aviso
+            else:
+                faltantes = _validar_campos_obligatorios(datos)
+                _CARGA_PENDIENTE[telefono] = {"datos": datos, "listo": not faltantes}
+                if faltantes:
+                    respuesta = _texto_pregunta_faltantes(datos, faltantes)
+                else:
+                    respuesta = _texto_confirmacion_carga(datos)
+
+        elif _keyword_match(texto_lower, ["carga", "cargar"]):
+            datos = await _extraer_carga_dueño(texto_original, None)
             faltantes = _validar_campos_obligatorios(datos)
-            _CARGA_PENDIENTE[telefono] = {"datos": datos}
+            _CARGA_PENDIENTE[telefono] = {"datos": datos, "listo": not faltantes}
             if faltantes:
                 respuesta = _texto_pregunta_faltantes(datos, faltantes)
             else:

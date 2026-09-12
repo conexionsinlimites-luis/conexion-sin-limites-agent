@@ -1372,9 +1372,19 @@ def _calcular_comision_por_rgu(ventas: list[dict], tramos: list[tuple[int, int, 
     total_final = sum(tarifa_duo if r == 2 else tarifa_solo for r in rgus)
     pago_inicial = sum(tarifa_base_duo if r == 2 else tarifa_base_solo for r in rgus)
 
+    # Desglose real por compañía -- sin esto, un grupo combinado como
+    # "VTR+Claro" no tiene ningún dato que le diga al formateador (Haiku)
+    # cuál de las dos fue cada venta, y termina inventando una (bug real:
+    # una venta VTR se reportó como "1 venta de Claro").
+    ventas_por_compania: dict[str, int] = {}
+    for v in ventas:
+        compania = (v.get("compania") or "otro").strip()
+        ventas_por_compania[compania] = ventas_por_compania.get(compania, 0) + 1
+
     return {
         "rgu_total": rgu_total,
         "cantidad_ventas": len(ventas),
+        "ventas_por_compania": ventas_por_compania,
         "tarifa_solo_internet": tarifa_solo,
         "tarifa_duo": tarifa_duo,
         "pago_inicial": pago_inicial,

@@ -976,6 +976,87 @@ async def caso_comision_vtr_claro_ventas_mezcladas():
         pass
 
 
+async def caso_comision_vtr_claro_desglose_por_compania():
+    """
+    Regresión de bug real: una venta VTR se reportó como "1 venta de
+    Claro" porque el resultado agregado no traía ningún desglose por
+    compañía -- el formateador tenía que adivinar. Ahora debe venir
+    explícito en ventas_por_compania.
+    """
+    from agent import crm
+
+    resultado_una = crm.calcular_comision_vtr_claro([_venta_duo("VTR")])
+    assert resultado_una["ventas_por_compania"] == {"VTR": 1}, resultado_una
+
+    ventas_mixtas = [_venta_duo("VTR"), _venta_duo("VTR"), _venta_solo("Claro")]
+    resultado_mixto = crm.calcular_comision_vtr_claro(ventas_mixtas)
+    assert resultado_mixto["ventas_por_compania"] == {"VTR": 2, "Claro": 1}, resultado_mixto
+
+    resultado_movistar = crm.calcular_comision_movistar([_venta_duo("Movistar")])
+    assert resultado_movistar["ventas_por_compania"] == {"Movistar": 1}, resultado_movistar
+
+
+async def caso_generar_xlsx_es_archivo_real():
+    """
+    Regresión de bug real: WhatsApp/Meta Cloud API rechaza text/csv como
+    tipo de documento (no está en su lista oficial de MIME types
+    soportados). El archivo generado debe ser un XLSX real y abrible, no
+    un CSV con la extensión cambiada.
+    """
+    import io as io_module
+    from openpyxl import load_workbook
+    from agent.main import _generar_xlsx
+
+    filas = [
+        {"nombre": "Juan Perez", "telefono": "56911112222", "compania": "VTR", "monto_venta": 38910},
+        {"nombre": "Maria Torres", "telefono": "56933334444", "compania": "Movistar", "monto_venta": 25000},
+    ]
+    contenido = _generar_xlsx(filas)
+
+    # Firma ZIP (todo XLSX real es un ZIP) -- un CSV con extensión cambiada
+    # jamás empezaría con estos bytes.
+    assert contenido[:2] == b"PK", "el archivo generado no tiene la firma ZIP de un XLSX real"
+
+    wb = load_workbook(io_module.BytesIO(contenido))
+    filas_leidas = list(wb.active.iter_rows(values_only=True))
+    assert filas_leidas[0] == ("nombre", "telefono", "compania", "monto_venta"), filas_leidas[0]
+    assert filas_leidas[1] == ("Juan Perez", "56911112222", "VTR", 38910), filas_leidas[1]
+    assert filas_leidas[2] == ("Maria Torres", "56933334444", "Movistar", 25000), filas_leidas[2]
+
+
+async def caso_texto_resumen_export_legible():
+    """
+    Regresión de bug real: el respaldo de texto (cuando falla el envío
+    del archivo, o cuando el dueño pide "chat") mostraba columnas crudas
+    de la BD (id, lead_id, created_at con timestamp completo). Ahora debe
+    mostrar solo campos legibles para un humano.
+    """
+    from agent.main import _texto_resumen_export
+
+    filas_ventas = [{
+        "id": 42, "lead_id": 7, "telefono": "56911112222", "nombre": "Juan Perez",
+        "compania": "VTR", "monto_venta": 38910,
+        "created_at": "2026-09-12 15:00:00.123456", "actualizado_en": "2026-09-12 15:00:00.123456",
+    }]
+    texto = _texto_resumen_export(filas_ventas, "ventas")
+
+    assert "Nombre: Juan Perez" in texto, texto
+    assert "Teléfono: 56911112222" in texto, texto
+    assert "Compañía: VTR" in texto, texto
+    assert "$38.910" in texto, texto
+    for campo_tecnico in ("id:", "lead_id:", "created_at:", "actualizado_en:"):
+        assert campo_tecnico not in texto, f"'{campo_tecnico}' no debería aparecer: {texto}"
+
+    filas_leads = [{
+        "id": 1, "telefono": "56922223333", "nombre": "Pedro Soto",
+        "subproducto": "DirecTV", "estado": "nuevo", "created_at": "2026-09-12 10:00:00",
+    }]
+    texto_leads = _texto_resumen_export(filas_leads, "leads")
+    assert "Compañía: DirecTV" in texto_leads, texto_leads
+    assert "Estado: nuevo" in texto_leads, texto_leads
+    assert "created_at" not in texto_leads, texto_leads
+
+
 CASOS_DETERMINISTAS = [
     ("rango_fecha_chile límites correctos", caso_rango_fecha_chile),
     ("leads_nuevos con fixtures", caso_leads_nuevos_fixtures),
@@ -1013,6 +1094,9 @@ CASOS_DETERMINISTAS = [
     ("comisión VTR/Claro: tramo 3 (55 RGU)", caso_comision_vtr_claro_tramo3),
     ("comisión Movistar: tramo 2 (55 RGU)", caso_comision_movistar_tramo2),
     ("comisión VTR/Claro: ventas mezcladas VTR+Claro", caso_comision_vtr_claro_ventas_mezcladas),
+    ("comisión VTR/Claro/Movistar: desglose por compañía (regresión)", caso_comision_vtr_claro_desglose_por_compania),
+    ("exportar: xlsx generado es un archivo real (regresión)", caso_generar_xlsx_es_archivo_real),
+    ("exportar: resumen de texto legible, sin columnas crudas (regresión)", caso_texto_resumen_export_legible),
 ]
 
 

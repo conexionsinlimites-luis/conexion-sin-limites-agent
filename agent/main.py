@@ -7,7 +7,6 @@ Funciona con cualquier proveedor (Whapi, Meta, Twilio) gracias a la capa de prov
 """
 
 import re
-import csv
 import io
 import json
 import yaml
@@ -20,6 +19,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
+from openpyxl import Workbook
 
 from agent.brain import generar_respuesta, client as claude_client
 from agent.memory import inicializar_db, guardar_mensaje, obtener_historial
@@ -985,6 +985,14 @@ async def _formatear_respuesta_dueño(pregunta: str, resultados: list[tuple[str,
             "incluyen cierres por llamada telefónica que él no haya "
             "cargado a mano."
         )
+    if any(nombre == "comision_mes" for nombre, _ in resultados):
+        aviso_extra += (
+            " El grupo 'vtr_claro' combina VTR y Claro en un solo pool -- "
+            "si mencionas una venta de una compañía específica dentro de "
+            "ese grupo, usa SOLO el desglose real en 'ventas_por_compania' "
+            "de los datos. NUNCA asumas ni inventes cuál de las dos "
+            "compañías fue si no está ahí explícito."
+        )
 
     bloques_datos = "\n\n".join(
         f"Resultado {i + 1} (función {nombre}):\n{json.dumps(datos, ensure_ascii=False, default=str)}"
@@ -1393,24 +1401,61 @@ def _detectar_cambio_modo_producto(texto_lower: str) -> str | None:
 
 # ── Parte 5 — exportar ventas/leads, preguntando el formato primero ───────
 
-def _generar_csv(filas: list[dict]) -> bytes:
-    """CSV con BOM (para que Excel abra bien los acentos) a partir de una lista de dicts."""
-    if not filas:
-        return b""
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(filas[0].keys()))
-    writer.writeheader()
-    for fila in filas:
-        writer.writerow({k: ("" if v is None else v) for k, v in fila.items()})
-    return output.getvalue().encode("utf-8-sig")
+def _generar_xlsx(filas: list[dict]) -> bytes:
+    """
+    XLSX real (no CSV disfrazado) — WhatsApp/Meta Cloud API NO acepta
+    text/csv como tipo de documento (confirmado contra la lista oficial de
+    MIME types soportados); solo formatos Office reales como
+    application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.
+    """
+    wb = Workbook()
+    ws = wb.active
+    if filas:
+        columnas = list(filas[0].keys())
+        ws.append(columnas)
+        for fila in filas:
+            ws.append([("" if v is None else v) for v in fila.values()])
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
 
 
-def _texto_resumen_export(filas: list[dict], limite: int = 15) -> str:
-    """Resumen legible en texto plano para el formato 'chat' — sin pasar por Haiku, para no arriesgar que reformatee mal un número."""
+_CAMPOS_LEGIBLES_EXPORT = {
+    "ventas": [
+        ("nombre", "Nombre"),
+        ("telefono", "Teléfono"),
+        ("compania", "Compañía"),
+        ("monto_venta", "Monto"),
+    ],
+    "leads": [
+        ("nombre", "Nombre"),
+        ("telefono", "Teléfono"),
+        ("subproducto", "Compañía"),
+        ("estado", "Estado"),
+    ],
+}
+
+
+def _texto_resumen_export(filas: list[dict], que: str, limite: int = 15) -> str:
+    """
+    Resumen legible en texto plano para el formato 'chat' (y para el
+    respaldo cuando falla el envío del archivo) — solo campos que un
+    humano reconoce (nombre, teléfono, compañía, monto/estado), NO el dump
+    crudo de columnas de la BD (id, lead_id, created_at, etc.). No pasa
+    por Haiku, para no arriesgar que reformatee mal un número.
+    """
+    campos = _CAMPOS_LEGIBLES_EXPORT.get(que, [("nombre", "Nombre"), ("telefono", "Teléfono")])
     lineas = [f"{len(filas)} resultado(s):", ""]
     for fila in filas[:limite]:
-        resumen_fila = ", ".join(f"{k}: {v}" for k, v in fila.items() if v not in (None, "", False))
-        lineas.append(f"• {resumen_fila}")
+        partes = []
+        for campo, etiqueta in campos:
+            valor = fila.get(campo)
+            if valor in (None, "", False):
+                continue
+            if campo == "monto_venta":
+                valor = f"${valor:,}".replace(",", ".")
+            partes.append(f"{etiqueta}: {valor}")
+        lineas.append(f"• {', '.join(partes)}" if partes else "• (sin datos)")
     if len(filas) > limite:
         lineas.append(f"\n...y {len(filas) - limite} más (pide 'archivo' para verlos todos).")
     return "\n".join(lineas)
@@ -1433,18 +1478,19 @@ async def _ejecutar_exportacion(parametros: dict, formato: str, telefono_destino
         return f"No hay {que} en ese período — nada que exportar."
 
     if formato == "chat":
-        return _texto_resumen_export(filas)
+        return _texto_resumen_export(filas, que)
 
     # formato == "archivo"
-    csv_bytes = _generar_csv(filas)
-    nombre_archivo = f"{que}_{fecha_desde}_a_{fecha_hasta or fecha_desde}.csv"
+    xlsx_bytes = _generar_xlsx(filas)
+    nombre_archivo = f"{que}_{fecha_desde}_a_{fecha_hasta or fecha_desde}.xlsx"
     enviado = await proveedor.enviar_documento(
-        telefono_destino, csv_bytes, nombre_archivo, "text/csv",
+        telefono_destino, xlsx_bytes, nombre_archivo,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         caption=f"{len(filas)} {que} del período {fecha_desde} al {fecha_hasta or fecha_desde}",
     )
     if enviado:
         return "Listo, te mandé el archivo 📎"
-    return "Tuve un problema mandando el archivo. Te lo muestro aquí en el chat en su lugar:\n\n" + _texto_resumen_export(filas)
+    return "Tuve un problema mandando el archivo. Te lo muestro aquí en el chat en su lugar:\n\n" + _texto_resumen_export(filas, que)
 
 
 # ── Parte 6 — cortesías simples, sin pasar por el motor de consulta ───────

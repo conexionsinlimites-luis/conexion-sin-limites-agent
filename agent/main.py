@@ -1494,10 +1494,15 @@ async def _procesar_mensaje_dueño(telefono: str, texto: str):
         pendiente = _CARGA_PENDIENTE.get(telefono)
         pendiente_export = _EXPORT_PENDIENTE.get(telefono)
 
-        # Modo producto tiene prioridad, salvo que haya una carga o una
-        # exportación en curso (para no confundir texto pendiente con un
-        # cambio de modo).
-        modo_nuevo = None if (pendiente or pendiente_export) else _detectar_cambio_modo_producto(texto_lower)
+        # Modo producto tiene prioridad, salvo que haya una carga o
+        # exportación en curso, O que el mensaje sea un comando de carga
+        # nuevo (que legítimamente puede contener "solo internet" o el
+        # nombre de una compañía como VTR — eso no debe confundirse con un
+        # cambio de modo real; bug real en producción: "carga venta: ...
+        # VTR, solo internet, efectivo" cambió el modo global a "solo VTR
+        # y Movistar" en vez de iniciar la carga).
+        es_comando_carga = _keyword_match(texto_lower, ["carga", "cargar"])
+        modo_nuevo = None if (pendiente or pendiente_export or es_comando_carga) else _detectar_cambio_modo_producto(texto_lower)
 
         if modo_nuevo:
             await prompt_builder.actualizar_modo_producto(modo_nuevo, cliente_slug=CLIENTE_SLUG)

@@ -473,6 +473,62 @@ async def caso_cancelacion_carga_frase_completa():
         assert mensajes_enviados == [(telefono, "Cancelado, no se guardó nada.")], (frase, mensajes_enviados)
 
 
+async def caso_carga_con_vtr_solo_no_cambia_modo_producto():
+    """
+    Regresión de un bug real en producción: "carga venta: Pedro Ramírez
+    56922222222 RUT 98765432-1 VTR, solo internet, efectivo" contiene
+    "solo" + "VTR" -- coincidía con las keywords de cambio de modo de
+    producto, y ese detector se evaluaba ANTES que el de carga, cambiando
+    el modo global de Valentina a "solo VTR y Movistar" en vez de iniciar
+    el flujo de carga (afectó a clientes reales preguntando por DirecTV).
+    """
+    import agent.main as main
+
+    telefono = "eval-test-carga-vtr-solo"
+    texto = "carga venta: Pedro Ramirez 56922222222 RUT 98765432-1 VTR, solo internet, efectivo"
+
+    datos_extraidos = {
+        "tipo": "venta", "nombre": "Pedro Ramirez", "telefono": "56922222222",
+        "rut": "98765432-1", "producto": "VTR",
+        "incluye_internet": True, "incluye_tv": False, "forma_pago": "efectivo",
+        "campos_faltantes": ["carnet_foto_recibida"], "listo_para_confirmar": False,
+    }
+    bloque = SimpleNamespace(type="tool_use", name="registrar_carga", input=datos_extraidos)
+    respuesta_falsa = SimpleNamespace(content=[bloque])
+
+    async def _fake_create(*args, **kwargs):
+        return respuesta_falsa
+
+    llamadas_modo_producto = []
+
+    async def _fake_actualizar_modo(modo, cliente_slug=None):
+        llamadas_modo_producto.append(modo)
+
+    mensajes_enviados = []
+
+    async def _fake_enviar_mensaje(tel, mensaje):
+        mensajes_enviados.append((tel, mensaje))
+        return True
+
+    original_create = main.claude_client.messages.create
+    original_actualizar_modo = main.prompt_builder.actualizar_modo_producto
+    original_enviar = main.proveedor.enviar_mensaje
+    main.claude_client.messages.create = _fake_create
+    main.prompt_builder.actualizar_modo_producto = _fake_actualizar_modo
+    main.proveedor.enviar_mensaje = _fake_enviar_mensaje
+    try:
+        await main._procesar_mensaje_dueño(telefono, texto)
+        assert telefono in main._CARGA_PENDIENTE, "debería haber entrado al flujo de carga"
+    finally:
+        main.claude_client.messages.create = original_create
+        main.prompt_builder.actualizar_modo_producto = original_actualizar_modo
+        main.proveedor.enviar_mensaje = original_enviar
+        main._CARGA_PENDIENTE.pop(telefono, None)
+
+    assert not llamadas_modo_producto, f"el modo de producto NO debía cambiar, pero se llamó con: {llamadas_modo_producto}"
+    assert len(mensajes_enviados) == 1, mensajes_enviados
+
+
 async def caso_router_dueno_multi_llamada():
     import agent.main as main
 
@@ -934,6 +990,7 @@ CASOS_DETERMINISTAS = [
     ("carga pendiente: 'sí' incompleto no ejecuta de una (regresión)", caso_carga_pendiente_si_incompleto_no_ejecuta_de_una),
     ("carga pendiente: 'sí' completo sí ejecuta", caso_carga_pendiente_si_completo_ejecuta),
     ("cancelación de carga por frase completa", caso_cancelacion_carga_frase_completa),
+    ("carga con 'VTR, solo internet' no cambia el modo de producto (regresión)", caso_carga_con_vtr_solo_no_cambia_modo_producto),
     ("router dueño ejecuta TODAS las llamadas (mock)", caso_router_dueno_multi_llamada),
     ("historial dueño respeta el límite de turnos", caso_historial_dueño_limite_turnos),
     ("router sin historial manda solo la pregunta actual", caso_router_sin_historial_previo),

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Valentina CRM — Acceso</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" crossorigin>
+<link rel="stylesheet" href="/static/login.css">
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <h1>Valentina CRM</h1>
+    <p>Conexión Sin Límites</p>
+  </div>
+  <div class="error" id="err">Usuario o contraseña incorrectos.</div>
+  <form method="POST" action="/login">
+    <div class="field">
+      <label for="user">Usuario</label>
+      <input id="user" name="username" type="text" autocomplete="username" required autofocus>
+    </div>
+    <div class="field">
+      <label for="pass">Contraseña</label>
+      <input id="pass" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <button class="btn" type="submit">Ingresar</button>
+  </form>
+</div>
+<script src="/static/login.js"></script>
+</body>
+</html>

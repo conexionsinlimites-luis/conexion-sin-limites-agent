@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook
 
 from agent.brain import generar_respuesta, client as claude_client
@@ -143,6 +144,7 @@ app = FastAPI(
 
 app.include_router(dashboard_router)
 app.include_router(dashboard_public_router)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.get("/")

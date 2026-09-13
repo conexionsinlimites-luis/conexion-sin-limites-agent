@@ -1,0 +1,113 @@
+  :root {
+    --bg: #000;
+    --card: #0a0a0a;
+    --border: #1a1a1a;
+    --neon: #00D4FF;
+    --red: #FF2233;
+    --txt: #e8e8e8;
+    --txt2: #888;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--txt);
+    font-family: 'Space Grotesk', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* grid de líneas de fondo */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .card {
+    position: relative;
+    z-index: 1;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--neon);
+    border-radius: 12px;
+    padding: 2.5rem 2rem;
+    width: 360px;
+    box-shadow: 0 0 40px rgba(0,212,255,.08);
+  }
+  .logo {
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+  .logo h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 900;
+    letter-spacing: .12em;
+    color: var(--neon);
+    text-transform: uppercase;
+  }
+  .logo p {
+    font-size: .7rem;
+    color: var(--txt2);
+    margin-top: .3rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  label {
+    display: block;
+    font-size: .72rem;
+    font-weight: 600;
+    color: var(--txt2);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: .4rem;
+  }
+  input {
+    width: 100%;
+    background: #111;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--txt);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: .88rem;
+    padding: .65rem .9rem;
+    outline: none;
+    transition: border-color .2s;
+  }
+  input:focus { border-color: var(--neon); }
+  .field { margin-bottom: 1.1rem; }
+  .btn {
+    width: 100%;
+    background: var(--neon);
+    color: #000;
+    border: none;
+    border-radius: 6px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .1em;
+    padding: .75rem;
+    cursor: pointer;
+    margin-top: .5rem;
+    transition: opacity .15s;
+    text-transform: uppercase;
+  }
+  .btn:hover { opacity: .85; }
+  .btn:active { opacity: .7; }
+  .error {
+    background: rgba(255,34,51,.12);
+    border: 1px solid rgba(255,34,51,.4);
+    border-radius: 6px;
+    color: #ff6677;
+    font-size: .78rem;
+    padding: .6rem .8rem;
+    margin-bottom: 1.2rem;
+    display: none;
+  }
+  .error.show { display: block; }

@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Valentina CRM — Conexion Sin Limites</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" crossorigin>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+
+<header style="position:relative">
+  <!-- Fila 1 (en móvil): marca + sistema -->
+  <div class="logo">
+    <!-- Ícono con inicial -->
+    <div class="logo-icon">C</div>
+    <!-- Nombre + slogan -->
+    <div class="logo-text-wrap">
+      <div class="logo-name">
+        CONE<span class="logo-x">X</span>I&Oacute;N SIN L&Iacute;MITES
+      </div>
+      <div class="logo-slogan">Tu se&ntilde;al. Tu mundo.</div>
+    </div>
+    <!-- Indicador de sistema — visible solo en móvil dentro del logo row -->
+    <div class="sys-status" id="sys-status-mobile" style="display:none">
+      <div class="sys-dot"></div>
+      <span>Activo</span>
+    </div>
+  </div>
+
+  <!-- Fila 2 (en móvil): nav + live -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" id="tab-metricas"    onclick="switchTab('metricas')">&#128200; M&eacute;tricas</button>
+    <button class="tab-btn"        id="tab-sin-resp"    onclick="switchTab('sin-respuesta')">&#9200; Sin Respuesta <span id="tab-sr-count" style="display:none;background:rgba(239,68,68,.25);color:#f87171;border-radius:10px;padding:.05rem .42rem;font-size:.6rem;margin-left:.25rem;font-family:'Space Grotesk',sans-serif">0</span></button>
+    <button class="tab-btn"        id="tab-campanas"    onclick="switchTab('campanas')">&#128226; Campa&ntilde;as</button>
+  </nav>
+  <button class="btn-live" id="btn-live" onclick="toggleLive()">&#128172; Live</button>
+
+  <!-- Desktop derecha: sistema + EN VIVO + timestamp + salir -->
+  <div class="header-right">
+    <div class="sys-status" id="sys-status-desktop">
+      <div class="sys-dot"></div>
+      <span>Sistema activo</span>
+    </div>
+    <div class="live-badge"><div class="live-dot"></div>EN VIVO</div>
+    <div id="last-update">Iniciando...</div>
+    <a href="/logout" style="color:var(--txt2);font-size:.65rem;font-weight:600;letter-spacing:.06em;text-decoration:none;text-transform:uppercase;padding:.3rem .7rem;border:1px solid var(--border);border-radius:14px;transition:color .2s" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--txt2)'">&#x2715; Salir</a>
+  </div>
+  <div class="scan-line"></div>
+</header>
+
+<div id="panel-metrics">
+<main>
+
+  <!-- KPIs -->
+  <div class="section-label" style="margin-top:1.5rem">Resumen del sistema</div>
+  <div class="kpi-grid">
+    <div class="kpi-card primary" onclick="abrirKpiModal('total')">
+      <span class="kpi-hint">ver detalle ›</span>
+      <div class="kpi-label">Total Leads</div>
+      <div class="kpi-value neon" id="k-total">0</div>
+      <div class="kpi-sub">registros activos</div>
+    </div>
+    <div class="kpi-card" onclick="abrirKpiModal('calientes')">
+      <span class="kpi-hint">ver detalle ›</span>
+      <div class="kpi-label">Leads Calientes</div>
+      <div class="kpi-value red" id="k-hot">0</div>
+      <div class="kpi-sub">caliente + listo cierre</div>
+    </div>
+    <div class="kpi-card" onclick="abrirKpiModal('cerrados')">
+      <span class="kpi-hint">ver detalle ›</span>
+      <div class="kpi-label">Conversiones</div>
+      <div class="kpi-value green" id="k-closed">0</div>
+      <div class="kpi-sub">leads cerrados</div>
+    </div>
+    <div class="kpi-card" onclick="abrirKpiModal('score')">
+      <span class="kpi-hint">ver detalle ›</span>
+      <div class="kpi-label">Score Promedio</div>
+      <div class="kpi-value white" id="k-score">0</div>
+      <div class="kpi-sub">sobre 100 pts</div>
+    </div>
+    <div class="kpi-card" onclick="abrirKpiModal('msgs')">
+      <span class="kpi-hint">ver detalle ›</span>
+      <div class="kpi-label">Mensajes Hoy</div>
+      <div class="kpi-value white" id="k-msgs">0</div>
+      <div class="kpi-sub">en historial CRM</div>
+    </div>
+    <div class="kpi-card" onclick="abrirKpiModal('followups')">
+      <span class="kpi-hint">ver detalle ›</span>
+      <div class="kpi-label">Follow-ups</div>
+      <div class="kpi-value neon" id="k-followups">0</div>
+      <div class="kpi-sub">pendientes de envio</div>
+    </div>
+  </div>
+
+  <!-- Embudo de conversión -->
+  <div class="section-label">Embudo de conversi&oacute;n</div>
+  <div class="funnel-grid" id="funnel-grid">
+    <div class="funnel-card">
+      <div class="funnel-label">Contactado <span class="funnel-arrow">→</span> Interesado</div>
+      <div class="funnel-pct" id="f-pct-0" style="color:var(--neon)">—</div>
+      <div class="funnel-bar-track"><div class="funnel-bar-fill" id="f-bar-0" style="background:var(--neon)"></div></div>
+      <div class="funnel-counts" id="f-cnt-0">sin datos</div>
+    </div>
+    <div class="funnel-card">
+      <div class="funnel-label">Interesado <span class="funnel-arrow">→</span> Caliente</div>
+      <div class="funnel-pct" id="f-pct-1" style="color:var(--orange)">—</div>
+      <div class="funnel-bar-track"><div class="funnel-bar-fill" id="f-bar-1" style="background:var(--orange)"></div></div>
+      <div class="funnel-counts" id="f-cnt-1">sin datos</div>
+    </div>
+    <div class="funnel-card">
+      <div class="funnel-label">Caliente <span class="funnel-arrow">→</span> Cierre</div>
+      <div class="funnel-pct" id="f-pct-2" style="color:var(--green)">—</div>
+      <div class="funnel-bar-track"><div class="funnel-bar-fill" id="f-bar-2" style="background:var(--green)"></div></div>
+      <div class="funnel-counts" id="f-cnt-2">sin datos</div>
+    </div>
+  </div>
+
+  <!-- Chart + Leads recientes -->
+  <div class="section-label">An&aacute;lisis de pipeline</div>
+  <div class="main-grid">
+
+    <div class="card">
+      <div class="card-title">Leads por estado</div>
+      <div class="chart-wrap">
+        <canvas id="chart-estados"></canvas>
+      </div>
+    </div>
+
+    <div class="card" style="overflow:visible">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem">
+        <span>Leads <span id="leads-count-badge" style="font-size:.6rem;color:var(--txt3);font-weight:400;margin-left:.3rem"></span></span>
+        <button onclick="abrirExportModal()" id="btn-export-csv" style="background:rgba(0,212,255,.07);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.62rem;font-weight:700;letter-spacing:.06em;padding:.3rem .7rem;border-radius:8px;cursor:pointer;transition:background .15s;white-space:nowrap" onmouseover="this.style.background='rgba(0,212,255,.18)'" onmouseout="this.style.background='rgba(0,212,255,.07)'">&#8659; Exportar CSV</button>
+      </div>
+      <!-- Filtros + búsqueda -->
+      <div class="filter-bar">
+        <input  type="text"   id="f-buscar"  class="filter-input"  placeholder="&#128269; Buscar nombre o teléfono..." oninput="filtrarLeads()">
+        <select id="f-estado" class="filter-select" onchange="filtrarLeads()">
+          <option value="">Todos los estados</option>
+          <option value="nuevo">Nuevo</option>
+          <option value="contactado">Contactado</option>
+          <option value="interesado">Interesado</option>
+          <option value="tibio">Tibio</option>
+          <option value="caliente">Caliente</option>
+          <option value="direccion_obtenida">Dirección obtenida</option>
+          <option value="listo_para_cierre">Listo cierre</option>
+          <option value="cerrado">Cerrado</option>
+          <option value="seguimiento">Seguimiento</option>
+        </select>
+        <select id="f-tag" class="filter-select" onchange="filtrarLeads()">
+          <option value="">Todos los tags</option>
+        </select>
+        <input  type="number" id="f-score" class="filter-score" placeholder="Score ≥" min="0" max="100" oninput="filtrarLeads()">
+        <input  type="date"   id="f-desde" class="filter-date"  onchange="filtrarLeads()" title="Desde (primer contacto)">
+        <input  type="date"   id="f-hasta" class="filter-date"  onchange="filtrarLeads()" title="Hasta (primer contacto)">
+        <button class="filter-clear" onclick="limpiarFiltros()">&#10005; Limpiar</button>
+        <span class="filter-count" id="f-count"></span>
+      </div>
+      <div class="leads-list" id="leads-list">
+        <div class="empty">Sin datos</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Mapa de calor por comuna -->
+  <div class="section-label">Mapa de calor por comuna</div>
+  <div class="card" style="margin-bottom:2rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+      <div class="card-title" style="margin-bottom:0">Leads por comuna <span id="hm-total-label" style="font-size:.65rem;font-weight:400;color:var(--txt3);margin-left:.4rem"></span></div>
+      <div style="font-size:.65rem;color:var(--txt3)">
+        <span style="color:var(--red)">&#9679;</span> Top 3 &nbsp;
+        <span style="color:#FFAA00">&#9679;</span> Alto &nbsp;
+        <span style="color:var(--txt3)">&#9679;</span> Bajo
+      </div>
+    </div>
+    <input class="heatmap-search" id="hm-search" type="text" placeholder="&#128269; Buscar comuna..." oninput="hmFiltrar()" autocomplete="off">
+    <div style="overflow-x:auto">
+      <table class="heatmap-table">
+        <thead>
+          <tr>
+            <th style="width:1.5rem">#</th>
+            <th></th>
+            <th>Comuna</th>
+            <th>Leads</th>
+            <th>Calientes</th>
+            <th>Score prom.</th>
+            <th style="min-width:100px">Distribuci&oacute;n</th>
+          </tr>
+        </thead>
+        <tbody id="hm-tbody">
+          <tr><td colspan="7" class="empty" style="padding:1.5rem;text-align:center">Cargando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="hm-pagination">
+      <span id="hm-pag-info"></span>
+      <div style="display:flex;gap:.4rem">
+        <button id="hm-prev" onclick="hmPaginar(-1)" disabled>&#8592; Ant</button>
+        <button id="hm-next" onclick="hmPaginar(1)">Sig &#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Actividad reciente -->
+  <div class="section-label">Actividad reciente</div>
+  <div class="card" style="margin-bottom:2rem">
+    <div class="card-title">&#218;ltimos mensajes por contacto</div>
+    <div class="msg-card-list" id="msgs-list">
+      <div class="empty">Sin datos</div>
+    </div>
+  </div>
+
+  <!-- Estadísticas de campañas -->
+  <div class="section-label" style="margin-top:1rem">Estad&iacute;sticas de campa&ntilde;as</div>
+  <div class="campanas-grid">
+
+    <!-- Embudo de estados -->
+    <div class="card">
+      <div class="card-title">Distribuci&oacute;n de estados</div>
+      <div id="campanas-embudo"><div class="empty">Cargando...</div></div>
+    </div>
+
+    <!-- Tasa de respuesta follow-ups -->
+    <div class="card">
+      <div class="card-title">Tasa de respuesta — follow-ups</div>
+      <div id="campanas-followups"><div class="empty">Cargando...</div></div>
+    </div>
+
+    <!-- Leads por día -->
+    <div class="card">
+      <div class="card-title">Leads por d&iacute;a <span style="font-size:.58rem;color:var(--txt3);font-weight:400">(&#250;ltimas 2 semanas)</span></div>
+      <div class="campanas-chart-wrap">
+        <canvas id="chart-leads-dia"></canvas>
+      </div>
+    </div>
+
+    <!-- Top productos -->
+    <div class="card">
+      <div class="card-title">Top productos de inter&eacute;s</div>
+      <div class="campanas-chart-wrap">
+        <canvas id="chart-productos"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+</div><!-- /panel-metrics -->
+
+<!-- ── Panel Sin Respuesta ───────────────────────────────────────────────────── -->
+<div id="panel-sin-respuesta">
+<main>
+  <div class="sr-toolbar">
+    <div class="sr-toolbar-left">
+      <span class="sr-title">&#9200; Sin Respuesta</span>
+      <span class="sr-count-badge" id="sr-total-badge">0 leads</span>
+    </div>
+    <a class="sr-export-btn" href="/api/sin-respuesta/export.csv" download>
+      &#8681; Exportar CSV
+    </a>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="sr-table-wrap">
+      <table class="sr-table">
+        <thead>
+          <tr>
+            <th>Nombre</th>
+            <th>Tel&eacute;fono</th>
+            <th>Ciudad</th>
+            <th>Fecha env&iacute;o</th>
+            <th>Sin respuesta</th>
+            <th>Promoci&oacute;n</th>
+            <th>Acci&oacute;n</th>
+          </tr>
+        </thead>
+        <tbody id="sr-tbody">
+          <tr><td colspan="7" class="sr-loading">Cargando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+</div><!-- /panel-sin-respuesta -->
+
+<!-- ── Panel Live Chat — WhatsApp Web ───────────────────────────────────────── -->
+<div id="panel-chat">
+  <div class="wa-layout" id="wa-layout">
+
+    <!-- Sidebar izquierdo -->
+    <div class="wa-sidebar">
+      <div class="wa-sidebar-hdr">
+        <span>Conversaciones</span>
+        <span id="wa-conv-count" style="font-family:'Space Grotesk',sans-serif;font-size:.7rem;color:var(--txt3);font-weight:500;letter-spacing:.04em">—</span>
+      </div>
+      <div class="wa-search-wrap">
+        <input type="text" id="wa-search" class="wa-search-input" placeholder="&#128269; Buscar contacto..." oninput="filtrarContactos(this.value)">
+      </div>
+      <!-- Filtros de estado -->
+      <div class="wa-status-filter-wrap">
+        <button class="wa-sf-btn active" id="sf-todos"       onclick="filtrarPorEstado('')">Todos</button>
+        <button class="wa-sf-btn"        id="sf-respondio"   onclick="filtrarPorEstado('respondio')">Respondieron</button>
+        <button class="wa-sf-btn"        id="sf-sin-resp"    onclick="filtrarPorEstado('sin-resp')">Sin resp.</button>
+        <button class="wa-sf-btn manual" id="sf-manual"      onclick="filtrarPorEstado('manual')">Manual</button>
+      </div>
+      <div class="wa-tag-filter-wrap">
+        <select id="wa-tag-filter" class="wa-tag-filter-select" onchange="filtrarPorTag(this.value)">
+          <option value="">&#127991; Todos los tags</option>
+          <option value="Interesado">Interesado</option>
+          <option value="Sin cobertura">Sin cobertura</option>
+          <option value="Tiene contrato">Tiene contrato</option>
+          <option value="Precio alto">Precio alto</option>
+          <option value="Llamar despu&#233;s">Llamar despu&#233;s</option>
+          <option value="No contesta">No contesta</option>
+          <option value="Cerrado">Cerrado</option>
+        </select>
+      </div>
+      <div class="wa-conv-list" id="wa-conv-list">
+        <div class="empty" style="padding:2.5rem 1rem;text-align:center">Cargando...</div>
+      </div>
+    </div>
+
+    <!-- Panel derecho -->
+    <div class="wa-chat-panel">
+
+      <!-- Estado vacío -->
+      <div class="wa-empty" id="wa-empty">
+        <div class="wa-empty-inner">
+          <div style="font-size:4rem;opacity:.2;margin-bottom:1.25rem">&#128172;</div>
+          <div style="font-size:1rem;font-weight:600;color:var(--txt2);margin-bottom:.4rem">Live Chat</div>
+          <div style="font-size:.82rem;color:var(--txt3)">Selecciona una conversaci&oacute;n para empezar</div>
+        </div>
+      </div>
+
+      <!-- Chat activo -->
+      <div class="wa-active" id="wa-active" style="display:none">
+
+        <!-- Header -->
+        <div class="wa-chat-hdr" id="wa-chat-hdr">
+          <button id="btn-wa-back" onclick="history.back()" title="Volver">&#8592;</button>
+        </div>
+
+        <!-- Banner MODO MANUAL -->
+        <div class="wa-manual-banner" id="wa-manual-banner">
+          <span style="font-size:1.1rem">&#128683;</span>
+          <div>
+            <div class="wa-manual-banner-text">MODO MANUAL &mdash; Valentina pausada</div>
+            <div class="wa-manual-banner-sub">Est&aacute;s respondiendo t&uacute; directamente. Valentina no enviar&aacute; mensajes.</div>
+          </div>
+        </div>
+
+        <!-- Notas internas -->
+        <div class="wa-notas-panel collapsed" id="wa-notas-panel">
+          <div class="wa-notas-header" onclick="toggleNotasPanel()">
+            <div class="wa-notas-title">
+              &#128221; Notas internas
+              <span class="wa-notas-count" id="wa-notas-count" style="display:none">0</span>
+            </div>
+            <span class="wa-notas-toggle">&#9660;</span>
+          </div>
+          <div class="wa-notas-body" id="wa-notas-body"></div>
+          <div class="wa-notas-input-row">
+            <textarea class="wa-nota-input" id="wa-nota-input" rows="1"
+              placeholder="Escribe una nota interna..."
+              oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,80)+'px'"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();guardarNotaInterna();}"></textarea>
+            <button class="wa-nota-send" id="wa-nota-send-btn" onclick="guardarNotaInterna()">+ Nota</button>
+          </div>
+        </div>
+
+        <!-- Burbujas -->
+        <div class="wa-messages" id="wa-messages">
+          <div class="empty" style="margin:auto;padding:2rem;text-align:center">Selecciona un contacto</div>
+        </div>
+
+        <!-- Input -->
+        <div class="wa-input-row">
+          <div class="wa-human-hint" id="wa-human-hint">&#128163; Modo humano &mdash; enviando directo a WhatsApp</div>
+          <div class="wa-input-main">
+            <textarea class="wa-input" id="wa-input" placeholder="Selecciona una conversaci&oacute;n para escribir..." rows="1" disabled></textarea>
+            <button class="wa-send-btn" id="wa-send-btn" onclick="waSend()" disabled>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            </button>
+          </div>
+        </div>
+
+      </div><!-- /wa-active -->
+    </div><!-- /wa-chat-panel -->
+  </div><!-- /wa-layout -->
+</div><!-- /panel-chat -->
+
+<!-- ── Panel Campañas ──────────────────────────────────────────────────────── -->
+<div id="panel-campanas">
+<main>
+  <div class="cpn-toolbar">
+    <div class="cpn-toolbar-title">&#128226; Campa&ntilde;as de WhatsApp</div>
+    <button class="cpn-new-btn" onclick="abrirNuevaCampana()">+ Nueva Campa&ntilde;a</button>
+  </div>
+  
+<div class="card" style="margin-bottom:1rem">
+  <div class="card-title">📤 Subir nueva base de datos (CSV)</div>
+  <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding:.5rem 0">
+    <input type="file" id="excel-input" accept=".csv,.xlsx" style="color:var(--txt);background:#111;border:1px solid #333;border-radius:8px;padding:.4rem .6rem;font-size:.78rem;flex:1;min-width:200px">
+    <button id="btn-subir-excel" onclick="subirExcel()" style="padding:.5rem 1.25rem;background:#00D4FF;color:#000;border:none;border-radius:8px;font-weight:700;cursor:pointer;white-space:nowrap">📤 Subir CSV</button>
+  </div>
+  <div style="font-size:.7rem;color:#666;margin-top:.25rem">Formato: columnas telefono, nombre, comuna (separadas por coma)</div>
+</div>
+<div class="card">
+    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+      <span>Historial de campa&ntilde;as</span>
+      <span id="cpn-count" style="font-size:.62rem;color:var(--txt3);font-weight:400"></span>
+    </div>
+    <div class="cpn-list" id="cpn-list">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</main>
+</div><!-- /panel-campanas -->
+
+<!-- Modal: KPI Detail -->
+<div class="modal-overlay" id="modal-kpi" onclick="if(event.target===this)cerrarKpiModal()">
+  <div class="modal-box" style="max-width:640px">
+    <div class="modal-header">
+      <div>
+        <div id="kpi-modal-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em"></div>
+        <div id="kpi-modal-sub" style="font-size:.65rem;color:var(--txt3);margin-top:.25rem"></div>
+      </div>
+      <button class="modal-close" onclick="cerrarKpiModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div id="kpi-modal-body" class="modal-messages" style="max-height:65vh;gap:.5rem">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Ver chat completo -->
+<div class="modal-overlay" id="modal-chat" onclick="if(event.target===this)cerrarModal()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div>
+        <div id="modal-nombre" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em"></div>
+        <div id="modal-tel" style="font-size:.68rem;color:var(--txt2);font-family:monospace;margin-top:.3rem"></div>
+      </div>
+      <button class="modal-close" onclick="cerrarModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div class="modal-messages" id="modal-messages">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Notas del lead -->
+<div class="modal-overlay" id="modal-notas" onclick="if(event.target===this)cerrarNotasModal()">
+  <div class="modal-box" style="max-width:500px">
+    <div class="modal-header">
+      <div>
+        <div id="notas-modal-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">NOTAS</div>
+        <div id="notas-modal-sub" style="font-size:.65rem;color:var(--txt3);margin-top:.25rem">Notas internas — no visibles para el cliente</div>
+      </div>
+      <button class="modal-close" onclick="cerrarNotasModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div style="padding:1.4rem 1.75rem;display:flex;flex-direction:column;gap:1rem">
+      <textarea id="notas-textarea"
+        placeholder="Escribe notas internas sobre este lead&#10;(historial, acuerdos, recordatorios...)"
+        style="width:100%;min-height:160px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:10px;color:var(--txt1);font-family:'Space Grotesk',sans-serif;font-size:.82rem;line-height:1.5;padding:.85rem 1rem;resize:vertical;outline:none;transition:border-color .2s;box-sizing:border-box"
+        onfocus="this.style.borderColor='rgba(0,212,255,.5)'"
+        onblur="this.style.borderColor='var(--border)'"
+      ></textarea>
+      <div style="display:flex;gap:.75rem;justify-content:flex-end">
+        <button onclick="cerrarNotasModal()" style="background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.75rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer">Cancelar</button>
+        <button id="notas-save-btn" onclick="guardarNotas()" style="background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.4);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.75rem;font-weight:700;padding:.5rem 1.4rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.25)'" onmouseout="this.style.background='rgba(0,212,255,.12)'">Guardar notas</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Tags del lead -->
+<div class="modal-overlay" id="modal-tags" onclick="if(event.target===this)cerrarTagsModal()">
+  <div class="modal-box" style="max-width:500px">
+    <div class="modal-header">
+      <div>
+        <div id="tags-modal-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">TAGS</div>
+        <div style="font-size:.65rem;color:var(--txt3);margin-top:.25rem">Haz clic para activar / desactivar</div>
+      </div>
+      <button class="modal-close" onclick="cerrarTagsModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div style="padding:1.4rem 1.75rem;display:flex;flex-direction:column;gap:1rem">
+      <div>
+        <div style="font-size:.65rem;color:var(--txt3);font-weight:700;letter-spacing:.08em;margin-bottom:.55rem">SUGERIDOS</div>
+        <div class="tags-predefined" id="tags-predefined"></div>
+      </div>
+      <div>
+        <div style="font-size:.65rem;color:var(--txt3);font-weight:700;letter-spacing:.08em;margin-bottom:.4rem">AGREGAR TAG PERSONALIZADO</div>
+        <div style="display:flex;gap:.5rem">
+          <input id="tags-custom-input" type="text" maxlength="50"
+            placeholder="Escribe un tag..."
+            style="flex:1;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:8px;color:var(--txt);padding:.4rem .75rem;font-family:'Space Grotesk',sans-serif;font-size:.78rem;outline:none"
+            onfocus="this.style.borderColor='rgba(0,212,255,.5)'"
+            onblur="this.style.borderColor='var(--border)'"
+            onkeydown="if(event.key==='Enter')agregarTagPersonalizado()">
+          <button onclick="agregarTagPersonalizado()" style="background:rgba(0,212,255,.1);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.72rem;font-weight:700;padding:.4rem .9rem;border-radius:8px;cursor:pointer">+ Agregar</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:.75rem;justify-content:flex-end;border-top:1px solid rgba(255,255,255,.06);padding-top:.75rem">
+        <button onclick="cerrarTagsModal()" style="background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.75rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer">Cancelar</button>
+        <button id="tags-save-btn" onclick="guardarTags()" style="background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.4);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.75rem;font-weight:700;padding:.5rem 1.4rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.25)'" onmouseout="this.style.background='rgba(0,212,255,.12)'">Guardar tags</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Detalle del lead -->
+<div class="modal-overlay" id="modal-lead-detail" onclick="if(event.target===this)cerrarLeadDetail()">
+  <div class="modal-box" style="max-width:580px">
+    <div class="modal-header">
+      <div>
+        <div id="ld-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">DETALLE DEL LEAD</div>
+        <div id="ld-sub" style="font-size:.65rem;color:var(--txt3);margin-top:.25rem"></div>
+      </div>
+      <div style="display:flex;gap:.6rem;align-items:center">
+        <button id="ld-btn-chat" onclick="" style="background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.3);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.68rem;font-weight:700;padding:.38rem .9rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.18)'" onmouseout="this.style.background='rgba(0,212,255,.08)'">&#8594; Chat</button>
+        <button class="modal-close" onclick="cerrarLeadDetail()">&#10005;&nbsp; Cerrar</button>
+      </div>
+    </div>
+    <div id="ld-body" class="modal-messages" style="max-height:72vh;gap:.75rem;padding:1.4rem 1.75rem">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Nueva Campaña -->
+<div class="modal-overlay" id="modal-nueva-campana" onclick="if(event.target===this)cerrarNuevaCampana()">
+  <div class="modal-box" style="max-width:640px;max-height:90vh;overflow-y:auto;display:flex;flex-direction:column">
+    <div class="modal-header" style="position:sticky;top:0;background:#111;z-index:10;border-bottom:1px solid #222;padding:1rem 1.5rem">
+      <div>
+        <div style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">📣 NUEVA CAMPAÑA</div>
+        <div style="font-size:.65rem;color:#666;margin-top:.25rem">Crea y segmenta tu mensaje masivo de WhatsApp</div>
+      </div>
+      <button class="modal-close" onclick="cerrarNuevaCampana()">✕ Cerrar</button>
+    </div>
+    <div style="padding:1.25rem 1.5rem;display:flex;flex-direction:column;gap:1rem">
+
+      <!-- Nombre -->
+      <div>
+        <div class="ncpn-label">NOMBRE DE LA CAMPAÑA *</div>
+        <input id="ncpn-nombre" class="ncpn-input" type="text" maxlength="80" placeholder="Ej: Campaña Mayo DirecTV">
+      </div>
+
+      <!-- Template Meta -->
+      <div>
+        <div class="ncpn-label">TEMPLATE DE WHATSAPP *</div>
+        <select id="ncpn-template" class="ncpn-input" style="cursor:pointer">
+          <option value="bienvenida_conexion">✅ bienvenida_conexion (aprobado)</option>
+        </select>
+        <div style="font-size:.68rem;color:#555;margin-top:.3rem">⚠️ Solo usar templates aprobados por Meta para evitar bloqueos</div>
+      </div>
+
+      <!-- Segmentación -->
+      <div style="background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.12);border-radius:10px;padding:1rem">
+        <div style="font-family:'Orbitron',sans-serif;font-size:.65rem;color:var(--neon);letter-spacing:.1em;margin-bottom:.75rem">🎯 SEGMENTACIÓN (opcional)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div>
+            <div class="ncpn-label">Tag</div>
+            <input id="ncpn-tag" class="ncpn-input" type="text" placeholder="Ej: DirecTV">
+          </div>
+          <div>
+            <div class="ncpn-label">Estado del lead</div>
+            <select id="ncpn-estado" class="ncpn-input" style="cursor:pointer">
+              <option value="">Todos los estados</option>
+              <option value="nuevo">Nuevo</option>
+              <option value="contactado">Contactado</option>
+              <option value="interesado">Interesado</option>
+              <option value="tibio">Tibio</option>
+              <option value="caliente">Caliente</option>
+              <option value="seguimiento">Seguimiento</option>
+            </select>
+          </div>
+          <div>
+            <div class="ncpn-label">Score mínimo</div>
+            <input id="ncpn-score" class="ncpn-input" type="number" min="0" max="100" placeholder="Ej: 30">
+          </div>
+          <div>
+            <div class="ncpn-label">Comuna</div>
+            <input id="ncpn-comuna" class="ncpn-input" type="text" placeholder="Ej: Santiago">
+          </div>
+        </div>
+        <!-- Fechas -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-top:.75rem">
+          <div>
+            <div class="ncpn-label">📅 Desde (primer contacto)</div>
+            <input id="ncpn-desde" class="ncpn-input" type="date" style="color-scheme:dark">
+          </div>
+          <div>
+            <div class="ncpn-label">📅 Hasta</div>
+            <input id="ncpn-hasta" class="ncpn-input" type="date" style="color-scheme:dark">
+          </div>
+        </div>
+      </div>
+
+      <!-- Límite de envío -->
+      <div style="margin-bottom:.75rem">
+        <div class="ncpn-label">🔢 Límite de envío (opcional)</div>
+        <input id="ncpn-limite" class="ncpn-input" type="number" min="1" max="500" placeholder="Ej: 100 (dejar vacío = todos)">
+      </div>
+      <!-- Ver destinatarios -->
+      <button class="ncpn-preview-btn" id="ncpn-preview-btn" onclick="previewDestinatarios()">👁 Ver destinatarios</button>
+
+      <!-- Vista previa cards -->
+      <div id="ncpn-preview-box" style="display:none;background:rgba(0,0,0,.3);border:1px solid #222;border-radius:10px;padding:1rem">
+        <div id="ncpn-preview-count" style="font-family:'Orbitron',sans-serif;font-size:1.4rem;color:var(--neon);text-align:center;margin-bottom:.75rem">0</div>
+        <div id="ncpn-preview-sub" style="text-align:center;font-size:.72rem;color:#666;margin-bottom:1rem">leads recibirán esta campaña</div>
+        <div id="ncpn-preview-cards" style="display:flex;flex-direction:column;gap:.4rem;max-height:200px;overflow-y:auto"></div>
+      </div>
+
+    </div>
+    <!-- Footer sticky -->
+    <div style="position:sticky;bottom:0;background:#111;border-top:1px solid #222;padding:1rem 1.5rem;display:flex;justify-content:flex-end;gap:.75rem">
+      <button class="ncpn-cancel-btn" onclick="cerrarNuevaCampana()">Cancelar</button>
+      <button class="ncpn-create-btn" id="ncpn-create-btn" onclick="crearCampana()">✅ Crear campaña</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Detalle Campaña -->
+<div class="modal-overlay" id="modal-campana-detail" onclick="if(event.target===this)cerrarDetalleCampana()">
+  <div class="modal-box" style="max-width:680px">
+    <div class="modal-header">
+      <div>
+        <div id="cpnd-title" style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">DETALLE DE CAMPA&Ntilde;A</div>
+        <div id="cpnd-sub" style="font-size:.65rem;color:var(--txt3);margin-top:.25rem"></div>
+      </div>
+      <button class="modal-close" onclick="cerrarDetalleCampana()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div id="cpnd-body" class="modal-messages" style="max-height:75vh;gap:.6rem;padding:1.4rem 1.75rem">
+      <div class="empty">Cargando...</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal exportar CSV ─────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-export-csv" onclick="if(event.target===this)cerrarExportModal()">
+  <div class="modal-box" style="max-width:460px">
+    <div class="modal-header">
+      <div>
+        <div style="font-family:'Orbitron',sans-serif;font-size:.85rem;font-weight:700;color:var(--neon);letter-spacing:.1em">EXPORTAR LEADS</div>
+        <div style="font-size:.65rem;color:var(--txt3);margin-top:.25rem">Aplica filtros opcionales antes de descargar</div>
+      </div>
+      <button class="modal-close" onclick="cerrarExportModal()">&#10005;&nbsp; Cerrar</button>
+    </div>
+    <div style="padding:1.4rem 1.75rem;display:flex;flex-direction:column;gap:1rem">
+
+      <!-- Estado -->
+      <div>
+        <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Estado</label>
+        <select id="exp-estado" class="filter-select" style="width:100%">
+          <option value="">Todos los estados</option>
+          <option value="nuevo">Nuevo</option>
+          <option value="contactado">Contactado</option>
+          <option value="interesado">Interesado</option>
+          <option value="seguimiento">Seguimiento</option>
+          <option value="caliente">Caliente</option>
+          <option value="listo_para_cierre">Listo para cierre</option>
+          <option value="cerrado">Cerrado</option>
+          <option value="perdido">Perdido</option>
+          <option value="sin_cobertura">Sin cobertura</option>
+        </select>
+      </div>
+
+      <!-- Tag -->
+      <div>
+        <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Tag</label>
+        <select id="exp-tag" class="filter-select" style="width:100%">
+          <option value="">Todos los tags</option>
+          <option value="Interesado">Interesado</option>
+          <option value="Sin cobertura">Sin cobertura</option>
+          <option value="Tiene contrato">Tiene contrato</option>
+          <option value="Precio alto">Precio alto</option>
+          <option value="Llamar después">Llamar después</option>
+          <option value="No contesta">No contesta</option>
+          <option value="Cerrado">Cerrado</option>
+        </select>
+      </div>
+
+      <!-- Prioridad -->
+      <div>
+        <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Prioridad visual</label>
+        <select id="exp-prioridad" class="filter-select" style="width:100%">
+          <option value="">Todas las prioridades</option>
+          <option value="alta">&#128308; Alta</option>
+          <option value="media">&#128993; Media</option>
+          <option value="baja">&#9898; Baja</option>
+        </select>
+      </div>
+
+      <!-- Rango de fechas -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+        <div>
+          <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Desde</label>
+          <input id="exp-desde" type="date" class="filter-select" style="width:100%;color-scheme:dark">
+        </div>
+        <div>
+          <label style="display:block;font-size:.65rem;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Hasta</label>
+          <input id="exp-hasta" type="date" class="filter-select" style="width:100%;color-scheme:dark">
+        </div>
+      </div>
+
+      <!-- Info de leads a exportar -->
+      <div id="exp-preview" style="background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.2);border-radius:8px;padding:.65rem .9rem;font-size:.72rem;color:var(--txt2);min-height:2.2rem"></div>
+
+      <!-- Botones -->
+      <div style="display:flex;gap:.75rem;justify-content:flex-end;margin-top:.25rem">
+        <button onclick="cerrarExportModal()" style="background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--txt2);font-family:'Space Grotesk',sans-serif;font-size:.75rem;padding:.5rem 1.1rem;border-radius:8px;cursor:pointer">Cancelar</button>
+        <button id="exp-download-btn" onclick="ejecutarExportCSV()" style="background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.4);color:var(--neon);font-family:'Space Grotesk',sans-serif;font-size:.75rem;font-weight:700;padding:.5rem 1.4rem;border-radius:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='rgba(0,212,255,.25)'" onmouseout="this.style.background='rgba(0,212,255,.12)'">&#8659; Descargar CSV</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>
